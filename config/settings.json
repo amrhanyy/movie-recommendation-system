@@ -1,0 +1,16 @@
+{
+  "features": {
+    "recommendations": false,
+    "history": false,
+    "watchlist": false,
+    "reviews": false,
+    "aiAssistant": false
+  },
+  "content": {
+    "defaultLanguage": "fr-FR",
+    "adultContent": false,
+    "maxRecommendations": 10,
+    "autoPlayTrailers": true,
+    "notificationEnabled": true
+  }
+}

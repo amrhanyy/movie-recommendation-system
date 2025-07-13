@@ -1,0 +1,103 @@
+   ▲ Next.js 15.1.7
+   - Environments: .env.local, .env
+
+   Creating an optimized production build ...
+request to https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7W0Q5n-wU.woff2 failed, reason: 
+
+Retrying 1/3...
+request to https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2 failed, reason: 
+
+Retrying 1/3...
+request to https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2JL7W0Q5n-wU.woff2 failed, reason: 
+
+Retrying 1/3...
+request to https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa2pL7W0Q5n-wU.woff2 failed, reason: 
+
+Retrying 1/3...
+request to https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2 failed, reason: 
+
+Retrying 1/3...
+ ✓ Compiled successfully
+   Skipping validation of types
+   Skipping linting
+   Collecting page data ...
+   Generating static pages (0/46) ...
+   Generating static pages (11/46) 
+   Generating static pages (22/46) 
+   Generating static pages (34/46) 
+ ✓ Generating static pages (46/46)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                              Size     First Load JS
+┌ ○ /                                    46.8 kB         168 kB
+├ ○ /_not-found                          990 B           107 kB
+├ ƒ /[mediaType]/[id]                    579 B           106 kB
+├ ƒ /actor/[id]                          3.36 kB         115 kB
+├ ○ /admin                               144 kB          275 kB
+├ ○ /ai-assistant                        9.76 kB         132 kB
+├ ƒ /api/actor/[id]                      250 B           106 kB
+├ ƒ /api/admin/cache                     250 B           106 kB
+├ ƒ /api/admin/settings                  250 B           106 kB
+├ ƒ /api/admin/stats                     250 B           106 kB
+├ ƒ /api/admin/users                     250 B           106 kB
+├ ƒ /api/ai-recommendations              250 B           106 kB
+├ ƒ /api/auth/[...nextauth]              250 B           106 kB
+├ ƒ /api/celebrities                     250 B           106 kB
+├ ƒ /api/chat                            250 B           106 kB
+├ ƒ /api/chat-history                    250 B           106 kB
+├ ƒ /api/chat-history/[id]               250 B           106 kB
+├ ƒ /api/chat-history/list               250 B           106 kB
+├ ƒ /api/favorites                       250 B           106 kB
+├ ƒ /api/favorites/enhanced-details      250 B           106 kB
+├ ƒ /api/features                        250 B           106 kB
+├ ƒ /api/genre/[id]                      250 B           106 kB
+├ ƒ /api/genre/[id]/content              250 B           106 kB
+├ ƒ /api/genres                          250 B           106 kB
+├ ƒ /api/history                         250 B           106 kB
+├ ƒ /api/mood-recommendations            250 B           106 kB
+├ ƒ /api/movie/[id]                      250 B           106 kB
+├ ƒ /api/movie/[id]/ai-similar           250 B           106 kB
+├ ƒ /api/movie/[id]/recommendations      250 B           106 kB
+├ ƒ /api/movies                          250 B           106 kB
+├ ƒ /api/movies/time-based               250 B           106 kB
+├ ƒ /api/movies/top-rated                250 B           106 kB
+├ ƒ /api/redis-example                   250 B           106 kB
+├ ƒ /api/search                          250 B           106 kB
+├ ƒ /api/trailers                        250 B           106 kB
+├ ƒ /api/trending                        250 B           106 kB
+├ ƒ /api/trending/movie                  250 B           106 kB
+├ ƒ /api/trending/tv                     250 B           106 kB
+├ ƒ /api/tv/[id]                         250 B           106 kB
+├ ƒ /api/tv/[id]/recommendations         250 B           106 kB
+├ ƒ /api/tv/[id]/similar                 250 B           106 kB
+├ ƒ /api/tv/top-rated                    250 B           106 kB
+├ ƒ /api/user                            250 B           106 kB
+├ ƒ /api/users                           250 B           106 kB
+├ ƒ /api/watchlist                       250 B           106 kB
+├ ƒ /api/watchlist/details               250 B           106 kB
+├ ƒ /api/watchlist/enhanced-details      250 B           106 kB
+├ ○ /auth/signin                         1.32 kB         123 kB
+├ ○ /celebrities                         3.75 kB         122 kB
+├ ○ /favorites                           6.35 kB         132 kB
+├ ○ /feature-unavailable                 1.81 kB         111 kB
+├ ƒ /genre/[id]                          2.96 kB         124 kB
+├ ○ /genres                              1.48 kB         113 kB
+├ ƒ /movie/[id]                          6.77 kB         140 kB
+├ ○ /profile                             6.73 kB         143 kB
+├ ○ /redis-demo                          1.34 kB         107 kB
+├ ○ /top-rated                           2.48 kB         124 kB
+├ ○ /trending                            2.05 kB         123 kB
+├ ƒ /tv/[id]                             5.95 kB         139 kB
+└ ○ /watchlist                           6.39 kB         133 kB
++ First Load JS shared by all            106 kB
+  ├ chunks/1517-74ad18fda211e617.js      50.7 kB
+  ├ chunks/4bd1b696-86c360c2c2f8a8a5.js  53 kB
+  └ other shared chunks (total)          2.04 kB
+
+
+ƒ Middleware                             53.2 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

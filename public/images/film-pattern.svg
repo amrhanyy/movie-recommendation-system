@@ -1,0 +1,22 @@
+<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Film strip vertical lines -->
+  <rect x="0" y="0" width="10" height="100" fill="#ffffff" opacity="0.1" />
+  <rect x="90" y="0" width="10" height="100" fill="#ffffff" opacity="0.1" />
+  
+  <!-- Film perforations -->
+  <rect x="0" y="5" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="0" y="25" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="0" y="45" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="0" y="65" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="0" y="85" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  
+  <rect x="90" y="5" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="90" y="25" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="90" y="45" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="90" y="65" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  <rect x="90" y="85" width="10" height="10" rx="2" fill="#000000" opacity="0.4" />
+  
+  <!-- Grid pattern -->
+  <rect x="20" y="20" width="60" height="60" stroke="#ffffff" stroke-width="0.5" fill="none" opacity="0.05" />
+  <rect x="30" y="30" width="40" height="40" stroke="#ffffff" stroke-width="0.5" fill="none" opacity="0.05" />
+</svg> 

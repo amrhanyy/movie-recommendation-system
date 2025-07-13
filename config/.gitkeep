@@ -1,0 +1,2 @@
+# This file ensures the config directory exists
+# Configuration files will be created here at runtime 
