@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import mongoose from 'mongoose';
 import { getUserByEmail } from '@/lib/models/User';
-import connectDB from '@/lib/db';
+import connectToMongoDB from '@/lib/mongodb';
 import { User } from '@/lib/models/User';
 
 // Define an interface for user document
@@ -24,9 +24,7 @@ async function hasElevatedPermissions(session: any) {
   if (!session?.user?.email) return { authorized: false, role: null };
   
   // Ensure MongoDB connection
-  if (mongoose.connection.readyState !== 1) {
-    await mongoose.connect(process.env.MONGODB_URI!);
-  }
+  await connectToMongoDB();
   
   // Get user details from MongoDB
   const user = await getUserByEmail(session.user.email);
@@ -50,7 +48,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
     
-    await connectDB();
+    await connectToMongoDB();
     
     // Get all users with pagination support
     const { searchParams } = new URL(request.url);
@@ -99,7 +97,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'User ID is required' }, { status: 400 });
     }
     
-    await connectDB();
+    await connectToMongoDB();
     
     // Get the target user to determine current role
     const targetUser = await User.findById(userId);

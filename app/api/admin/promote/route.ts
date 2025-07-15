@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import mongoose from 'mongoose';
-import connectDB from '@/lib/db';
+import connectToMongoDB from '@/lib/mongodb';
 import { User } from '@/lib/models/User';
 
 let ownerCreated = false; // Simple in-memory flag to prevent multiple uses
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 });
     }
 
-    await connectDB();
+    await connectToMongoDB();
 
     // Check if any owner already exists
     const existingOwner = await User.findOne({ role: 'owner' });

@@ -3,7 +3,7 @@ import { authConfig } from "@/app/auth.config"
 import { NextAuthOptions, Session } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import { User } from "@/lib/models/User";
-import connectDB from "@/lib/db";
+import connectToMongoDB from "@/lib/mongodb";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -15,7 +15,7 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ user, account, profile }) {
       try {
-        await connectDB();
+        await connectToMongoDB();
         
         // Find existing user or create new one
         const existingUser = await User.findOne({ email: user.email });
@@ -44,7 +44,7 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       try {
-        await connectDB();
+        await connectToMongoDB();
         const dbUser = await User.findOne({ email: session.user?.email });
         console.log("Session user email:", session.user?.email);  // Add this line
         console.log("DB User:", dbUser);  // Add this line

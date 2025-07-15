@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import mongoose from 'mongoose';
 import { getUserByEmail } from '@/lib/models/User';
-import connectDB from '@/lib/db';
+import connectToMongoDB from '@/lib/mongodb';
 import { User } from '@/lib/models/User';
 import cacheManager from '@/lib/cacheManager';
 
@@ -10,9 +10,7 @@ async function isAdmin(session: any) {
   if (!session?.user?.email) return false;
   
   // Ensure MongoDB connection
-  if (mongoose.connection.readyState !== 1) {
-    await mongoose.connect(process.env.MONGODB_URI!);
-  }
+  await connectToMongoDB();
   
   // Get user details from MongoDB
   const user = await getUserByEmail(session.user.email);
@@ -31,7 +29,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
     
-    await connectDB();
+    await connectToMongoDB();
     
     // Get total users count
     const totalUsers = await User.countDocuments({});

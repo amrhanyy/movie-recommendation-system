@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import mongoose from 'mongoose';
+import connectToMongoDB from "@/lib/mongodb";
 
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
@@ -9,11 +10,8 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 
-export default User;;
-import connectDB from "@/lib/db";
-
 export async function POST(req: Request) {
-  await connectDB();
+  await connectToMongoDB();
   
   const { email, name, preferences } = await req.json();
   

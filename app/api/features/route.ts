@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import connectDB from '@/lib/db'
+import connectToMongoDB from '@/lib/mongodb'
 import mongoose from 'mongoose'
 
 // Define the settings interface to help TypeScript
@@ -30,9 +30,7 @@ const DEFAULT_CONFIG: FeatureSettings = {
 export async function GET(request: NextRequest) {
   try {
     // Connect to database
-    if (mongoose.connection.readyState !== 1) {
-      await connectDB();
-    }
+    await connectToMongoDB();
     
     // Try to get settings from database
     const rawSettings = await FeatureSettingsModel.findOne({}).sort({ createdAt: -1 }).lean();

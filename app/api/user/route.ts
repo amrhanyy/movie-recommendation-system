@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { User } from "@/lib/models/User";
-import connectDB from "@/lib/db";
+import connectToMongoDB from "@/lib/mongodb";
 
 export async function GET() {
   try {
@@ -11,7 +11,7 @@ export async function GET() {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    await connectDB();
+    await connectToMongoDB();
     const user = await User.findOne({ email: session.user.email });
     
     if (!user) {
@@ -36,7 +36,7 @@ export async function PUT(request: Request) {
     }
 
     const data = await request.json();
-    await connectDB();
+    await connectToMongoDB();
 
     const user = await User.findOneAndUpdate(
       { email: session.user.email },

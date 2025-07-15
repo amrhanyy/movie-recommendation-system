@@ -1,9 +1,11 @@
 import { Movie, Rating, User } from './models';
 import type { IMovie } from './models';
 import connectDB from "@/lib/db";
+import connectToMongoDB from '@/lib/mongodb';
 
 export async function getRecommendedMovies(userId: string, limit: number = 10) {
   try {
+    await connectToMongoDB();
     // Get user's ratings
     const userRatings = await Rating.find({ userId });
     
@@ -35,6 +37,7 @@ export async function getRecommendedMovies(userId: string, limit: number = 10) {
 
 export async function addMovie(movieData: IMovie) {
   try {
+    await connectToMongoDB();
     const movie = new Movie(movieData);
     await movie.save();
     return movie;
@@ -46,6 +49,7 @@ export async function addMovie(movieData: IMovie) {
 
 export async function addRating(userId: string, mediaId: number, rating: number) {
   try {
+    await connectToMongoDB();
     const newRating = new Rating({
       userId,
       mediaId,

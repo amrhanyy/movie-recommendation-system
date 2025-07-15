@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { getUserByEmail } from '@/lib/models/User';
-import connectDB from '@/lib/db';
+import connectToMongoDB from '@/lib/mongodb';
 import mongoose from 'mongoose';
 
 // Define the settings interface
@@ -35,9 +35,7 @@ async function isAdmin(session: any) {
   
   try {
     // Ensure MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      await mongoose.connect(process.env.MONGODB_URI!);
-    }
+    await connectToMongoDB();
     
     // Get user details from MongoDB
     const user = await getUserByEmail(session.user.email);
@@ -53,6 +51,7 @@ async function isAdmin(session: any) {
 // Helper to save settings
 async function saveSettings(config: Partial<FeatureSettings>) {
   try {
+    await connectToMongoDB();
     // Validate and sanitize config
     const sanitizedConfig: FeatureSettings = {
       features: {
@@ -80,9 +79,7 @@ export async function GET(request: NextRequest) {
     }
     
     // Connect to database
-    if (mongoose.connection.readyState !== 1) {
-      await connectDB();
-    }
+    await connectToMongoDB();
     
     // Get latest settings
     const rawSettings = await FeatureSettingsModel.findOne({}).sort({ createdAt: -1 }).lean();
