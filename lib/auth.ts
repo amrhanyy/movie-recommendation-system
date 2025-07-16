@@ -12,7 +12,16 @@ export const authOptions: NextAuthOptions = {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
     }),
   ],
+  session: {
+    strategy: 'jwt',
+  },
   callbacks: {
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+      }
+      return token;
+    },
     async signIn({ user, account, profile }) {
       try {
         await connectToMongoDB();
@@ -44,16 +53,17 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       try {
-        await connectToMongoDB();
-        const dbUser = await User.findOne({ email: session.user?.email });
-        console.log("Session user email:", session.user?.email);  // Add this line
-        console.log("DB User:", dbUser);  // Add this line
-        if (dbUser) {
-          session.user = {
-            ...session.user,
-            id: dbUser._id.toString(),
-            preferences: dbUser.preferences
-          };
+        if (token?.id) {
+          await connectToMongoDB();
+          const dbUser = await User.findById(token.id);
+          if (dbUser) {
+            session.user = {
+              ...session.user,
+              id: dbUser._id.toString(),
+              preferences: dbUser.preferences,
+              role: dbUser.role
+            };
+          }
         }
       } catch (error) {
         console.error("Error in session callback:", error);
