@@ -61,15 +61,17 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       try {
-        if (token?.id) {
+        if (token?.email) {
           await connectToMongoDB();
-          const dbUser = await User.findById(token.id);
+          const dbUser = await User.findOne({ email: token.email });
           if (dbUser) {
             session.user = {
-              ...session.user,
               id: dbUser._id.toString(),
+              email: dbUser.email,
+              name: dbUser.name,
+              image: dbUser.image,
               preferences: dbUser.preferences,
-              role: dbUser.role
+              role: dbUser.role,
             } as any;
           }
         }
