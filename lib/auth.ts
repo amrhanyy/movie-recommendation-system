@@ -16,8 +16,17 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async jwt({ token, user }) {
-      if (user) {
-        token.id = user.id;
+      // When a user signs in, `user` is defined. Store the MongoDB _id, not the provider id.
+      try {
+        if (user?.email) {
+          await connectToMongoDB();
+          const dbUser = await User.findOne({ email: user.email });
+          if (dbUser) {
+            token.id = dbUser._id.toString();
+          }
+        }
+      } catch (err) {
+        console.error('JWT callback error:', err);
       }
       return token;
     },
