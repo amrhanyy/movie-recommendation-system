@@ -1,5 +1,4 @@
 import { getServerSession } from "next-auth/next"
-import { authConfig } from "@/app/auth.config"
 import { NextAuthOptions, Session } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import { User } from "@/lib/models/User";
@@ -75,7 +74,7 @@ export const authOptions: NextAuthOptions = {
 };
 
 export async function getSession(): Promise<Session | null> {
-  return await getServerSession(authConfig)
+  return await getServerSession(authOptions as any)
 }
 
 export async function getCurrentUser() {
