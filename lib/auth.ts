@@ -61,7 +61,7 @@ export const authOptions: NextAuthOptions = {
               id: dbUser._id.toString(),
               preferences: dbUser.preferences,
               role: dbUser.role
-            };
+            } as any;
           }
         }
       } catch (error) {
@@ -69,6 +69,9 @@ export const authOptions: NextAuthOptions = {
       }
       return session;
     }
+  },
+  pages: {
+    signIn: '/auth/signin',
   },
   // ...other options...
 };
