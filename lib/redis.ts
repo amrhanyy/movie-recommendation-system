@@ -73,10 +73,10 @@ const getRedisClient = async () => {
     // Create a new Redis client
     redisClient = createClient({
       username: 'default',
-      password: 'tpMgAnUWsq3hYBWp5L5Hzyyswcq18aiQ',
+      password: process.env.REDIS_PASSWORD,
       socket: {
-        host: 'redis-19982.crce176.me-central-1-1.ec2.redns.redis-cloud.com',
-        port: 19982,
+        host: process.env.REDIS_HOST,
+        port: Number(process.env.REDIS_PORT),
         connectTimeout: 3000, // 3 second timeout
         reconnectStrategy: (retry) => {
           // Only retry 3 times max with exponential backoff
