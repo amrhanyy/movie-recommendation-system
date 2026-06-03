@@ -10,6 +10,7 @@ import { SearchBar } from "@/components/SearchBar"
 import { Toaster } from 'react-hot-toast'
 import { AdminNavLink } from "@/components/AdminNavLink"
 import { FeatureNavItems } from "@/components/layout/FeatureNavItems"
+import { SpeedInsights } from '@vercel/speed-insights/next'
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -68,6 +69,7 @@ export default function RootLayout({
           </div>
         </Providers>
         <Toaster position="bottom-center" />
+        <SpeedInsights />
       </body>
     </html>
   )
