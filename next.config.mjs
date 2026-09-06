@@ -26,7 +26,7 @@ const nextConfig = {
     // Prod stays locked: no unsafe-eval, no inline scripts.
     const scriptSrc = isDev
       ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
-      : "script-src 'self'"
+      : "script-src 'self' 'unsafe-inline'"
     const csp = [
       "default-src 'self'",
       "base-uri 'self'",
