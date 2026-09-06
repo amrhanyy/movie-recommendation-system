@@ -306,7 +306,11 @@ describe('R5-G: CSP header structure', () => {
     expect(source).not.toMatch(/connect-src [^;]*themoviedb/);
     // 'unsafe-eval' may appear in the dev-only branch (Next.js dev runtime
     // requires it); the production script-src must never grant it.
-    expect(source).toMatch(/:\s*"script-src 'self'"/);
+    // The production assignment is `: "script-src 'self' 'unsafe-inline'"`
+    // (inline styles are required by the Tailwind/React runtime).
+    expect(source).toMatch(/:\s*"script-src 'self' 'unsafe-inline'"/);
+    // The dev branch may relax script-src, but must never apply to prod.
+    expect(source).toMatch(/\? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"/);
     expect(source).not.toContain("default-src *");
     expect(source).toMatch(/img-src [^;]*https:\/\/image\.tmdb\.org/);
     expect(source).not.toMatch(/img-src [^;]*youtube/);

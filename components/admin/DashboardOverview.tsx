@@ -19,7 +19,8 @@ interface GrowthDataItem {
 interface DashboardStats {
   totalUsers: number
   cacheKeys: number
-  apiRequests24h: number
+  // null when request logging is unavailable (F-046: no mock data)
+  apiRequests24h: number | null
   growthData: GrowthDataItem[]
 }
 
@@ -148,14 +149,16 @@ export function DashboardOverview() {
     return () => clearInterval(intervalId)
   }, [fetchStats])
 
-  // Function to format large numbers
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(1) + 'M'
-    } else if (num >= 1000) {
-      return (num / 1000).toFixed(1) + 'K'
+  // Function to format large numbers (null/NaN-safe: F-047 hotfix)
+  const formatNumber = (num: number | null | undefined): string => {
+    const value = Number(num)
+    const safe = Number.isFinite(value) ? value : 0
+    if (safe >= 1000000) {
+      return (safe / 1000000).toFixed(1) + 'M'
+    } else if (safe >= 1000) {
+      return (safe / 1000).toFixed(1) + 'K'
     } else {
-      return num.toString()
+      return safe.toString()
     }
   }
 
@@ -254,7 +257,7 @@ export function DashboardOverview() {
                 ) : error ? (
                   <span className="text-red-400 text-base">Error</span>
                 ) : stats ? (
-                  formatNumber(stats.apiRequests24h)
+                  stats.apiRequests24h == null ? 'N/A' : formatNumber(stats.apiRequests24h)
                 ) : (
                   '--'
                 )}
@@ -387,7 +390,11 @@ export function DashboardOverview() {
                           fontSize={11}
                           tickLine={false}
                           axisLine={{ stroke: '#4b5563', strokeWidth: 1 }}
-                          tickFormatter={(value) => value === 0 ? '0' : value < 1000 ? value.toString() : `${value / 1000}k`}
+                          tickFormatter={(value) => {
+                            const v = Number(value)
+                            if (!Number.isFinite(v)) return '0'
+                            return v === 0 ? '0' : v < 1000 ? v.toString() : `${v / 1000}k`
+                          }}
                           tick={{ fill: '#9ca3af' }}
                         />
 
