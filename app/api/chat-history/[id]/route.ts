@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/security/auth";
+import { requireUser } from "@/lib/security/auth";
 import { objectIdSchema } from "@/lib/security/schemas";
 import connectToMongoDB from "@/lib/mongodb";
 import { ChatHistory } from "@/lib/models/ChatHistory";
@@ -10,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
@@ -57,7 +57,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

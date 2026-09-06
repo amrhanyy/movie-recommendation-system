@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireSession } from "@/lib/security/auth";
+import { requireUser } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import connectToMongoDB from "@/lib/mongodb";
 import { ChatHistory } from "@/lib/models/ChatHistory";
@@ -30,7 +30,7 @@ interface ChatHistoryDoc {
 
 export async function GET() {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
@@ -62,7 +62,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

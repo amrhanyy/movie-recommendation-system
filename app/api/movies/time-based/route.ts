@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import redisCache from "../../../../lib/cache";
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { tryRequireUser } from '@/lib/security/auth';
 import connectToMongoDB from '@/lib/mongodb';
 import { WatchlistModel } from '@/lib/models/WatchlistModel';
 import { FavoritesModel } from '@/lib/models/FavoritesModel';
@@ -26,6 +25,27 @@ const durationRanges = {
     description: "Movies over 2 hours",
     minRating: 7.0
   }
+}
+
+interface TmdbMovie {
+  id: number
+  genre_ids?: number[]
+}
+
+interface TmdbDiscoverResponse {
+  results: TmdbMovie[]
+  page?: number
+  total_pages?: number
+  total_results?: number
+}
+
+// Shape of watchlist/favorites docs used for per-request personalization.
+// `itemId` is the canonical model field; `tmdbId`/`genreIds` are read as a
+// fallback for legacy docs that stored them.
+interface PersonalizationItem {
+  itemId?: number
+  tmdbId?: number
+  genreIds?: number[]
 }
 
 export async function GET(request: NextRequest) {
@@ -63,18 +83,20 @@ export async function GET(request: NextRequest) {
   const hour = now.getHours()
   const minutes = now.getMinutes()
 
-  // Get user session to personalize recommendations
-  const session = await getServerSession(authOptions)
-  const userId = session?.user?.email
+  // W1-002: optional session via tryRequireUser; null => unpersonalized base.
+  const optionalUser = await tryRequireUser()
+  const userId = optionalUser?.email
 
   // Create a time-based seed for variety that changes every 5 minutes
   const timeSlot = Math.floor(minutes / 5)
   const timeSeed = `${dayOfWeek}-${hour}-${timeSlot}`
-  // Cache key uses a stable non-PII identifier; email omitted (F-031 privacy fix)
-  const cacheKey = `movies:duration:${duration}:page:${page}:genre:${genre}:time:${timeSeed}:user:${userId ? 'auth' : 'guest'}`
+  // Cache key is params-only (duration/page/genre/time-slot). It must never
+  // contain user identity: the cached payload is the unpersonalized TMDB
+  // base, and per-user filtering/ordering happens after the cache read.
+  const cacheKey = `movies:duration:${duration}:page:${page}:genre:${genre}:time:${timeSeed}`
 
   try {
-    const data = await redisCache.getOrSet(
+    const baseData = await redisCache.getOrSet<TmdbDiscoverResponse>(
       cacheKey,
       async () => {
         console.log(`Cache miss - fetching ${duration} duration movies from TMDB API`)
@@ -109,51 +131,7 @@ export async function GET(request: NextRequest) {
         )
 
         if (!response.ok) throw new Error('TMDB API error')
-        const movieData = await response.json()
-
-        // If user is logged in, personalize recommendations based on watchlist and favorites
-        if (userId) {
-          await connectToMongoDB()
-
-          // Get user's watchlist and favorites
-          const [watchlist, favorites] = await Promise.all([
-            WatchlistModel.find({ userId }).lean(),
-            FavoritesModel.find({ userId }).lean()
-          ])
-
-          // Extract genres from user's watchlist and favorites
-          const userGenreIds = new Set<number>()
-          const userMovieIds = new Set<number>()
-
-          // Process watchlist and favorites to extract genres and movie IDs
-          watchlist.forEach(item => {
-            if (item.genreIds) {
-              item.genreIds.forEach((genreId: number) => userGenreIds.add(genreId))
-            }
-            userMovieIds.add(item.tmdbId)
-          })
-
-          favorites.forEach(item => {
-            if (item.genreIds) {
-              item.genreIds.forEach((genreId: number) => userGenreIds.add(genreId))
-            }
-            userMovieIds.add(item.tmdbId)
-          })
-
-          // Filter out movies already in watchlist/favorites
-          movieData.results = movieData.results.filter((movie: { id: number }) =>
-            !userMovieIds.has(movie.id)
-          )
-
-          // Sort results to prioritize movies with genres matching user preferences
-          if (userGenreIds.size > 0) {
-            movieData.results.sort((a: { genre_ids?: number[] }, b: { genre_ids?: number[] }) => {
-              const aMatchCount = a.genre_ids?.filter((id: number) => userGenreIds.has(id)).length || 0
-              const bMatchCount = b.genre_ids?.filter((id: number) => userGenreIds.has(id)).length || 0
-              return bMatchCount - aMatchCount
-            })
-          }
-        }
+        const movieData = (await response.json()) as TmdbDiscoverResponse
 
         return movieData
       },
@@ -161,8 +139,51 @@ export async function GET(request: NextRequest) {
       300
     )
 
+    // Per-request personalization: filter + re-sort a copy of the cached
+    // unpersonalized base. Never write this personalized output to cache.
+    let results: TmdbMovie[] = Array.isArray(baseData.results)
+      ? [...baseData.results]
+      : []
+
+    if (userId) {
+      await connectToMongoDB()
+
+      // Indexed ownership-scoped queries only.
+      const [watchlist, favorites] = await Promise.all([
+        WatchlistModel.find({ userId }).select({ itemId: 1, tmdbId: 1, genreIds: 1, _id: 0 }).lean<PersonalizationItem[]>(),
+        FavoritesModel.find({ userId }).select({ itemId: 1, tmdbId: 1, genreIds: 1, _id: 0 }).lean<PersonalizationItem[]>()
+      ])
+
+      const userGenreIds = new Set<number>()
+      const userMovieIds = new Set<number>()
+      for (const item of [...watchlist, ...favorites]) {
+        if (Array.isArray(item.genreIds)) {
+          for (const genreId of item.genreIds) {
+            if (typeof genreId === 'number' && Number.isInteger(genreId)) {
+              userGenreIds.add(genreId)
+            }
+          }
+        }
+        const ownedId = item.itemId ?? item.tmdbId
+        if (typeof ownedId === 'number' && Number.isInteger(ownedId)) {
+          userMovieIds.add(ownedId)
+        }
+      }
+
+      results = results.filter((movie) => !userMovieIds.has(movie.id))
+
+      if (userGenreIds.size > 0) {
+        results.sort((a, b) => {
+          const aMatchCount = a.genre_ids?.filter((id) => userGenreIds.has(id)).length ?? 0
+          const bMatchCount = b.genre_ids?.filter((id) => userGenreIds.has(id)).length ?? 0
+          return bMatchCount - aMatchCount
+        })
+      }
+    }
+
     return NextResponse.json({
-      ...data,
+      ...baseData,
+      results,
       duration_info: {
         range: `${min}-${max} minutes`,
         description: durationRanges[duration as keyof typeof durationRanges].description

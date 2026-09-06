@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
-  requireSession: vi.fn(),
+  requireUser: vi.fn(),
   applyRateLimitUser: vi.fn(),
   fetch: vi.fn(),
   findOne: vi.fn(),
@@ -16,7 +16,8 @@ vi.mock('@/lib/mongodb', () => ({
 }));
 
 vi.mock('@/lib/security/auth', () => ({
-  requireSession: mocks.requireSession,
+  requireSession: mocks.requireUser,
+  requireUser: mocks.requireUser,
 }));
 
 vi.mock('@/lib/security/rateLimit', () => ({
@@ -54,7 +55,7 @@ function geminiOk(text = 'A movie answer') {
 
 describe('R5 chat trust boundary', () => {
   beforeEach(() => {
-    mocks.requireSession.mockReset();
+    mocks.requireUser.mockReset();
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
     mocks.findOne.mockReset();
@@ -67,7 +68,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('unauthenticated chat rejected before model call', async () => {
-    mocks.requireSession.mockResolvedValue(denied(401, 'Authentication required'));
+    mocks.requireUser.mockResolvedValue(denied(401, 'Authentication required'));
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const res = await POST(
@@ -82,7 +83,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('foreign chatId rejected', async () => {
-    mocks.requireSession.mockResolvedValue(allow('owner@example.com'));
+    mocks.requireUser.mockResolvedValue(allow('owner@example.com'));
     mocks.lean.mockResolvedValue(null);
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
@@ -104,7 +105,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('invalid chatId rejected', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const res = await POST(
@@ -118,7 +119,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('client-supplied assistant response is ignored or rejected', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const res = await POST(
@@ -136,7 +137,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('client previousMessages cannot inject another user history', async () => {
-    mocks.requireSession.mockResolvedValue(allow('owner@example.com'));
+    mocks.requireUser.mockResolvedValue(allow('owner@example.com'));
     mocks.lean.mockResolvedValue({
       messages: [{ role: 'user', content: 'owned history' }],
     });
@@ -169,7 +170,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('history is loaded only with authenticated ownership criteria', async () => {
-    mocks.requireSession.mockResolvedValue(allow('owner@example.com'));
+    mocks.requireUser.mockResolvedValue(allow('owner@example.com'));
     mocks.lean.mockResolvedValue({ messages: [] });
     mocks.fetch.mockResolvedValue(geminiOk());
     vi.resetModules();
@@ -190,7 +191,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('oversized message rejected', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const res = await POST(
@@ -204,7 +205,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('model is not called on validation or ownership failure', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     mocks.lean.mockResolvedValue(null);
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
@@ -221,7 +222,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('user and assistant messages are persisted only after valid response', async () => {
-    mocks.requireSession.mockResolvedValue(allow('owner@example.com'));
+    mocks.requireUser.mockResolvedValue(allow('owner@example.com'));
     mocks.fetch.mockResolvedValue(geminiOk('Validated reply'));
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
@@ -249,7 +250,7 @@ describe('R5 chat trust boundary', () => {
   });
 
   it('failed model response does not persist a fabricated assistant message', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     mocks.fetch.mockResolvedValue(
       new Response(JSON.stringify({ error: { message: 'upstream boom' } }), { status: 500 })
     );
@@ -277,12 +278,12 @@ describe('R5 chat trust boundary', () => {
 
 describe('R5 chat-history persistence is server-side only', () => {
   beforeEach(() => {
-    mocks.requireSession.mockReset();
+    mocks.requireUser.mockReset();
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
   });
 
   it('POST /api/chat-history rejects client-supplied assistant responses', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     vi.resetModules();
     const { POST } = await import('@/app/api/chat-history/route.ts');
     const res = await POST(

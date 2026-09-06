@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
-  requireSession: vi.fn(),
+  requireUser: vi.fn(),
   applyRateLimitUser: vi.fn(),
   applyRateLimitPublic: vi.fn(),
   countDocuments: vi.fn(),
@@ -15,8 +15,8 @@ vi.mock('@/lib/mongodb', () => ({
 }));
 
 vi.mock('@/lib/security/auth', () => ({
-  requireSession: mocks.requireSession,
-  requireUser: vi.fn(),
+  requireSession: mocks.requireUser,
+  requireUser: mocks.requireUser,
   requireAdmin: vi.fn(),
   requireOwner: vi.fn(),
   hasElevatedRole: (role: string) => role === 'admin' || role === 'owner',
@@ -76,8 +76,8 @@ function makePostRequest(url: string, body: unknown): NextRequest {
 describe('M-05: favorites list rate limiting and capacity cap', () => {
   beforeEach(async () => {
     vi.resetModules();
-    mocks.requireSession.mockReset();
-    mocks.requireSession.mockResolvedValue({ ok: true, user: sessionUser });
+    mocks.requireUser.mockReset();
+    mocks.requireUser.mockResolvedValue({ ok: true, user: sessionUser });
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.applyRateLimitPublic.mockReset().mockResolvedValue(null);
     mocks.countDocuments.mockReset().mockResolvedValue(0);
@@ -149,8 +149,8 @@ describe('M-05: favorites list rate limiting and capacity cap', () => {
 describe('M-05: watchlist list capacity cap', () => {
   beforeEach(async () => {
     vi.resetModules();
-    mocks.requireSession.mockReset();
-    mocks.requireSession.mockResolvedValue({ ok: true, user: sessionUser });
+    mocks.requireUser.mockReset();
+    mocks.requireUser.mockResolvedValue({ ok: true, user: sessionUser });
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.countDocuments.mockReset().mockResolvedValue(500);
     mocks.exists.mockReset().mockResolvedValue(null);

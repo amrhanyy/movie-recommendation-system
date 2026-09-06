@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireSession } from "@/lib/security/auth";
+import { requireUser } from "@/lib/security/auth";
 import {
   applyRateLimitUser,
   RATE_LIMITS,
@@ -129,7 +129,7 @@ async function getGeminiResponse(
 
 export async function POST(request: NextRequest) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

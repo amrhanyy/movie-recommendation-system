@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { requireSession } from '@/lib/security/auth';
+import { requireUser } from '@/lib/security/auth';
 import connectToMongoDB from '@/lib/mongodb';
 import { WatchlistModel } from '@/lib/models/WatchlistModel';
 import tmdbClient from '@/lib/tmdb';
@@ -16,7 +16,7 @@ const DETAIL_TTL = 1800;
 export async function GET() {
   try {
     // Server-authoritative session (M-04: no PII logging of session email)
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

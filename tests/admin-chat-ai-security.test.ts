@@ -30,7 +30,7 @@ vi.mock('@/lib/mongodb', () => ({
 }));
 
 vi.mock('@/lib/security/auth', () => ({
-  requireSession: mocks.requireSession,
+  requireSession: mocks.requireUser,
   requireUser: mocks.requireUser,
   requireAdmin: mocks.requireAdmin,
   requireOwner: mocks.requireOwner,
@@ -115,7 +115,7 @@ describe('GET /api/admin/stats (F-010/F-015)', () => {
   installGlobalFetch();
 
   beforeEach(() => {
-    mocks.requireSession.mockReset();
+    mocks.requireUser.mockReset();
     mocks.requireUser.mockReset();
     mocks.requireAdmin.mockReset();
     mocks.requireOwner.mockReset();
@@ -168,13 +168,13 @@ describe('POST /api/chat (F-005)', () => {
   installGlobalFetch();
 
   beforeEach(() => {
-    mocks.requireSession.mockReset();
+    mocks.requireUser.mockReset();
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
   });
 
   it('unauthenticated returns 401 before fetch is called', async () => {
-    mocks.requireSession.mockResolvedValue(denied(401, 'Authentication required'));
+    mocks.requireUser.mockResolvedValue(denied(401, 'Authentication required'));
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const res = await POST(
@@ -189,7 +189,7 @@ describe('POST /api/chat (F-005)', () => {
   });
 
   it('oversized message is rejected before fetch', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const res = await POST(
@@ -202,7 +202,7 @@ describe('POST /api/chat (F-005)', () => {
   });
 
   it('oversized previousMessages array is rejected before fetch', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const prev = Array.from({ length: 21 }, () => ({ role: 'user', content: 'hi' }));
@@ -216,7 +216,7 @@ describe('POST /api/chat (F-005)', () => {
   });
 
   it('rate-limited request returns 429 with Retry-After', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     mocks.applyRateLimitUser.mockResolvedValue(
       new Response(JSON.stringify({ error: 'Too many requests. Please try again later.' }), {
         status: 429,
@@ -241,13 +241,13 @@ describe('GET /api/movie/[id]/ai-similar (F-006)', () => {
   installGlobalFetch();
 
   beforeEach(() => {
-    mocks.requireSession.mockReset();
+    mocks.requireUser.mockReset();
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
   });
 
   it('unauthenticated returns 401 before any fetch', async () => {
-    mocks.requireSession.mockResolvedValue(denied(401, 'Authentication required'));
+    mocks.requireUser.mockResolvedValue(denied(401, 'Authentication required'));
     vi.resetModules();
     const { GET } = await import('@/app/api/movie/[id]/ai-similar/route.ts');
     const res = await GET(
@@ -258,7 +258,7 @@ describe('GET /api/movie/[id]/ai-similar (F-006)', () => {
   });
 
   it('rate-limited request returns 429 without external calls', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     mocks.applyRateLimitUser.mockResolvedValue(
       new Response(JSON.stringify({ error: 'Too many requests.' }), {
         status: 429,
@@ -276,7 +276,7 @@ describe('GET /api/movie/[id]/ai-similar (F-006)', () => {
   });
 
   it('non-numeric ID is rejected with 400 without external calls', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     mocks.fetch.mockImplementation(() => {
       throw new Error('external call attempted');
     });
@@ -296,7 +296,7 @@ describe('GET /api/ai-recommendations (F-050, R1)', () => {
   installGlobalFetch();
 
   beforeEach(() => {
-    mocks.requireSession.mockReset();
+    mocks.requireUser.mockReset();
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
     chain(mocks.historyFind);
@@ -305,7 +305,7 @@ describe('GET /api/ai-recommendations (F-050, R1)', () => {
   });
 
   it('unauthenticated returns 401', async () => {
-    mocks.requireSession.mockResolvedValue(denied(401, 'Authentication required'));
+    mocks.requireUser.mockResolvedValue(denied(401, 'Authentication required'));
     vi.resetModules();
     const { GET } = await import('@/app/api/ai-recommendations/route.ts');
     const res = await GET(new NextRequest('http://localhost/'));
@@ -313,7 +313,7 @@ describe('GET /api/ai-recommendations (F-050, R1)', () => {
   });
 
   it('error response does not expose errorDetails', async () => {
-    mocks.requireSession.mockResolvedValue(allow());
+    mocks.requireUser.mockResolvedValue(allow());
     // Favorites/watchlist empty => needsContent early return (no AI call)
     mocks.fetch.mockResolvedValue(
       new Response(JSON.stringify({ results: [] }), { status: 200 })

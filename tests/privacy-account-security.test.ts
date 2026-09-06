@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/mongodb', () => ({ default: vi.fn().mockResolvedValue({}) }));
 vi.mock('@/lib/security/auth', () => ({
-  requireSession: mocks.requireSession,
+  requireSession: mocks.requireUser,
   requireUser: mocks.requireUser,
 }));
 vi.mock('@/lib/security/rateLimit', () => ({
@@ -117,7 +117,6 @@ function chainFind(value: unknown) {
 
 beforeEach(() => {
   vi.resetModules();
-  mocks.requireSession.mockReset();
   mocks.requireUser.mockReset();
   mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
   mocks.findOne.mockReset();
@@ -430,7 +429,7 @@ describe('R6 history consent', () => {
   it('disabled preference prevents the history POST', async () => {
     // The POST route queries the history model for reads; with tracking off it
     // never reaches a write. We assert the write is never performed.
-    mocks.requireSession.mockResolvedValue({
+    mocks.requireUser.mockResolvedValue({
       ok: true,
       user: { id: U.id, email: 'owner@example.com', role: 'user' },
     });
@@ -456,7 +455,7 @@ describe('R6 history consent', () => {
   });
 
   it('history clear is scoped to the current user', async () => {
-    mocks.requireSession.mockResolvedValue({
+    mocks.requireUser.mockResolvedValue({
       ok: true,
       user: { id: U.id, email: U.email, role: 'user' },
     });

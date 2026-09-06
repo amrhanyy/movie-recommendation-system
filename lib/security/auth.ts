@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { authOptions, type AuthUserRecord, type UserRole } from "@/lib/auth";
 import { User } from "@/lib/models/User";
+import { RevokedSession } from "@/lib/models/RevokedSession";
 import connectToMongoDB from "@/lib/mongodb";
 
 export interface AuthenticatedUser {
@@ -25,6 +26,7 @@ export interface AuthenticatedUser {
   name?: string | null;
   image?: string | null;
   role: UserRole;
+  jti?: string;
   preferences?: {
     favorite_genres?: string[];
     selected_moods?: string[];
@@ -65,6 +67,7 @@ export async function requireSession(): Promise<AuthResult | AuthDenied> {
         name: session.user.name,
         image: session.user.image,
         role: session.user.role,
+        jti: session.jti,
         preferences: session.user.preferences,
       },
     };
@@ -89,6 +92,22 @@ export async function requireUser(): Promise<AuthResult | AuthDenied> {
 
   try {
     await connectToMongoDB();
+    // W1-001: server-side revocation. The session carries the stable JWT jti;
+    // a signOut-inserted blocklist row must reject the replayed token with 401.
+    // Indexed exists() only — no token/PII logged, no body changes.
+    const sessionJti = sessionResult.user.jti;
+    if (typeof sessionJti === "string" && sessionJti.length > 0) {
+      const revoked = await RevokedSession.exists({ jti: sessionJti });
+      if (revoked) {
+        return {
+          ok: false,
+          response: NextResponse.json(
+            { error: "Authentication required" },
+            { status: 401 }
+          ),
+        };
+      }
+    }
     const dbUser = await User.findOne(
       { email: sessionResult.user.email },
       { role: 1, email: 1, name: 1, image: 1, preferences: 1 }
@@ -129,6 +148,46 @@ export async function requireUser(): Promise<AuthResult | AuthDenied> {
         { status: 500 }
       ),
     };
+  }
+}
+
+/**
+ * Optional-session variant of requireUser for public routes with
+ * personalization (e.g. time-based movies). Standalone: fresh-DB existence
+ * check, no dependency on requireUser internals (Worker 2 owns revocation).
+ * Returns the fresh-DB user, or null when the session is absent/invalid or
+ * the DB user is gone (deleted/revoked/stale). Never throws, never logs PII.
+ */
+export async function tryRequireUser(): Promise<AuthenticatedUser | null> {
+  try {
+    const session = await getServerSession(authOptions);
+    const email = session?.user?.email;
+    if (!email) return null;
+
+    await connectToMongoDB();
+    const dbUser = await User.findOne(
+      { email },
+      { role: 1, email: 1, name: 1, image: 1, preferences: 1 }
+    ).lean<AuthUserRecord>();
+
+    if (!dbUser) return null;
+
+    return {
+      id: dbUser._id.toString(),
+      email: dbUser.email,
+      name: dbUser.name,
+      image: dbUser.image,
+      role: dbUser.role,
+      preferences: dbUser.preferences as
+        | {
+            favorite_genres?: string[];
+            selected_moods?: string[];
+            historyTrackingEnabled?: boolean;
+          }
+        | undefined,
+    };
+  } catch {
+    return null;
   }
 }
 

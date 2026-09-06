@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   redisGetOrSet: vi.fn(),
   redisSet: vi.fn(),
   redisGet: vi.fn(),
-  requireSession: vi.fn(),
+  requireUser: vi.fn(),
   watchlistFind: vi.fn(),
   fetchMediaDetails: vi.fn(),
   applyRateLimitPublic: vi.fn(),
@@ -47,7 +47,8 @@ vi.mock('@/lib/security/rateLimit', () => ({
 }));
 
 vi.mock('@/lib/security/auth', () => ({
-  requireSession: mocks.requireSession,
+  requireSession: mocks.requireUser,
+  requireUser: mocks.requireUser,
 }));
 
 vi.mock('@/lib/models/WatchlistModel', () => ({
@@ -292,8 +293,8 @@ describe('R3-C: /api/watchlist/details caps fan-out, caches, and has no sleeps',
 
   beforeEach(async () => {
     vi.resetModules();
-    mocks.requireSession.mockReset();
-    mocks.requireSession.mockResolvedValue({ ok: true, user: sessionUser });
+    mocks.requireUser.mockReset();
+    mocks.requireUser.mockResolvedValue({ ok: true, user: sessionUser });
     mocks.connectToMongoDB.mockReset().mockResolvedValue({});
     mocks.watchlistFind.mockReset();
     mocks.fetchMediaDetails.mockReset();

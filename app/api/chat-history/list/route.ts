@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { requireSession } from '@/lib/security/auth';
+import { requireUser } from '@/lib/security/auth';
 import connectToMongoDB from '@/lib/mongodb';
 import { ChatHistory } from '@/lib/models/ChatHistory';
 import { chatCutoffDate } from '@/lib/privacy-retention';
 
 export async function GET() {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

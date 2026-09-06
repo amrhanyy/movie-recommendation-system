@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireSession } from "@/lib/security/auth";
+import { requireUser } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import { historyItemSchema } from "@/lib/security/schemas";
 import connectToMongoDB from "@/lib/mongodb";
@@ -26,7 +26,7 @@ async function resolveHistoryContext(): Promise<
   | { ok: true; email: string; trackingEnabled: boolean }
   | { ok: false; response: NextResponse }
 > {
-  const authResult = await requireSession();
+  const authResult = await requireUser();
   if (!authResult.ok) return { ok: false, response: authResult.response };
 
   let trackingEnabled = true;
