@@ -13,11 +13,13 @@ import {
 } from '@/lib/ai-security';
 import {
   buildSimilarMoviesGeminiPayload,
+  buildGeminiGenerateUrl,
+  GEMINI_FALLBACK_MODELS,
   GEMINI_GENERATE_URL,
+  getGeminiApiKey,
 } from '@/lib/gemini-payload';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const BASE_URL = 'https://api.themoviedb.org/3';
 
 interface MovieDetailItem {
@@ -32,25 +34,43 @@ interface MovieDetailItem {
 }
 
 async function getAISimilarMovies(movieDetails: MovieDetailItem) {
-  if (!GOOGLE_API_KEY) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
     throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
   }
-  const maxRetries = 3;
-  let retryCount = 0;
+
+  const urls = [GEMINI_GENERATE_URL, ...GEMINI_FALLBACK_MODELS.map(buildGeminiGenerateUrl)];
+  let urlIndex = 0;
   let backoffTime = 1000;
-  
+  let retryCount = 0;
+  const maxRetries = 3 * urls.length;
+
   while (retryCount < maxRetries) {
     try {
-      const response = await fetch(GEMINI_GENERATE_URL, {
+      const url = urls[Math.min(urlIndex, urls.length - 1)];
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-goog-api-key': GOOGLE_API_KEY,
+          'x-goog-api-key': apiKey,
         },
         body: JSON.stringify(buildSimilarMoviesGeminiPayload(movieDetails)),
       });
 
       if (!response.ok) {
+        let errorData = '<unreadable>';
+        try {
+          errorData = (await response.text()).slice(0, 500);
+        } catch {
+          // ignore body-read failures
+        }
+        console.error('[Gemini Upstream Error]', response.status, errorData);
+        const mappedCode = mapAIError(response.status, false).code;
+        if (mappedCode === "AI_AUTH_ERROR" && urlIndex < urls.length - 1) {
+          console.error('[Gemini Model Fallback]', url);
+          urlIndex++;
+          continue;
+        }
         if (response.status === 503 || response.status === 429 || response.status >= 500) {
           retryCount++;
           if (retryCount < maxRetries) {
@@ -60,7 +80,7 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
           }
         }
         throw new AIUpstreamError(
-          mapAIError(response.status, false).code,
+          mappedCode,
           `AI service error ${response.status}`
         );
       }

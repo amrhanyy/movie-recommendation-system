@@ -84,20 +84,27 @@ export const cacheManager = {
     }
   },
 
-  /**
-   * Get cache stats (number of keys, memory usage).
-   * Returns only sanitized aggregate metrics - never raw key names or secrets.
-   */
-  async getCacheStats(): Promise<Record<string, unknown>> {
-    const offline = {
-      totalKeys: 0,
-      memory: { used_memory_human: 'N/A (Redis offline)', used_memory_peak_human: 'N/A' },
-      keyspace: { db0: 'N/A' },
-      uptime_in_days: 0,
-      connected_clients: 0,
-      hit_rate: 'N/A',
-      status: 'offline',
-    };
+/**
+ * Get cache stats (number of keys, memory usage).
+ * Returns only sanitized aggregate metrics - never raw key names or secrets.
+ * Status is truthful about the backend in use:
+ * - 'online': live Redis connection.
+ * - 'fallback-memory': Redis unconfigured/unreachable; in-memory cache active.
+ * - 'offline' is kept only when callers explicitly need the legacy label
+ *   (mapped to 'fallback-memory' semantics); admin UI shows the fallback mode.
+ */
+async getCacheStats(): Promise<Record<string, unknown>> {
+  const fallback = (status: string) => ({
+    totalKeys: 0,
+    memory: { used_memory_human: 'N/A (Redis offline)', used_memory_peak_human: 'N/A' },
+    keyspace: { db0: 'N/A' },
+    uptime_in_days: 0,
+    connected_clients: 0,
+    hit_rate: 'N/A',
+    status,
+    backend: 'memory',
+  });
+  const offline = fallback('fallback-memory');
     try {
       const redis = await getRedisClient();
 
@@ -127,22 +134,23 @@ export const cacheManager = {
       const misses = keyspaceMissesMatch ? parseInt(keyspaceMissesMatch[1], 10) : 0;
       const hitRate = hits + misses > 0 ? ((hits / (hits + misses)) * 100).toFixed(2) + '%' : 'N/A';
 
-      return {
-        totalKeys: keysCount,
-        memory: {
-          used_memory_human: memoryMatch ? memoryMatch[1].trim() : 'unknown',
-          used_memory_peak_human: memoryPeakMatch ? memoryPeakMatch[1].trim() : 'unknown'
-        },
-        uptime_in_days: uptimeMatch ? parseInt(uptimeMatch[1], 10) : 0,
-        connected_clients: connectedClientsMatch ? parseInt(connectedClientsMatch[1], 10) : 0,
-        hit_rate: hitRate,
-        status: 'online'
-      };
-    } catch (error) {
-      console.error('Error getting cache stats:', error);
-      return { ...offline, status: 'error' };
-    }
-  },
+    return {
+      totalKeys: keysCount,
+      memory: {
+        used_memory_human: memoryMatch ? memoryMatch[1].trim() : 'unknown',
+        used_memory_peak_human: memoryPeakMatch ? memoryPeakMatch[1].trim() : 'unknown'
+      },
+      uptime_in_days: uptimeMatch ? parseInt(uptimeMatch[1], 10) : 0,
+      connected_clients: connectedClientsMatch ? parseInt(connectedClientsMatch[1], 10) : 0,
+      hit_rate: hitRate,
+      status: 'online',
+      backend: 'redis'
+    };
+  } catch (error) {
+    console.error('Error getting cache stats:', error);
+    return { ...offline, status: 'error', backend: 'memory' };
+  }
+},
 
   /**
    * Clear application-scoped cache entries only.

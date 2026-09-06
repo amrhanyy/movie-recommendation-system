@@ -38,18 +38,32 @@ class RedisHealthMonitor {
   }
   
   /**
-   * Record a Redis error
+   * Record a Redis error.
+   * Auth failures, timeouts, and disconnects mark the client unhealthy
+   * immediately (so the admin UI stops showing a stale "healthy" state).
+   * Only repeated max-clients errors disable Redis for a cooldown period.
    * @param errorMessage The error message
    * @returns Whether Redis should be disabled
    */
   public recordError(errorMessage: string): boolean {
     this._lastCheckTime = Date.now();
-    
+    const message = String(errorMessage || '');
+
+    // Connection/auth/timeout failures: unhealthy at once, no disable yet.
+    if (
+      /auth|WRONGPASS|NOAUTH|ECONNREFUSED|ETIMEDOUT|timeout|offline|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|connected.*closed|socket/i.test(
+        message
+      )
+    ) {
+      this._isHealthy = false;
+      return false;
+    }
+
     // Check specifically for connection limit errors
-    if (errorMessage.includes('max number of clients reached')) {
+    if (message.includes('max number of clients reached')) {
       this._errorCounter++;
       this._isHealthy = false;
-      
+
       // If we hit max error count, disable Redis
       if (this._errorCounter >= this._maxErrorCount) {
         this._isDisabled = true;
@@ -57,7 +71,7 @@ class RedisHealthMonitor {
         return true;
       }
     }
-    
+
     return false;
   }
   

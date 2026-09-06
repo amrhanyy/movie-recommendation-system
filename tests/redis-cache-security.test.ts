@@ -362,6 +362,43 @@ describe('R4-H: configuration parsing', () => {
     expect(socket.port).toBe(6380);
   });
 
+  it('password without explicit username defaults to ACL user default', async () => {
+    vi.stubEnv('REDIS_URL', '');
+    vi.stubEnv('REDIS_HOST', 'cache.example.com');
+    vi.stubEnv('REDIS_PORT', '6379');
+    vi.stubEnv('REDIS_TLS', '');
+    vi.stubEnv('REDIS_USERNAME', '');
+    vi.stubEnv('REDIS_PASSWORD', 'secret-placeholder');
+    const { buildRedisConfig } = await import('@/lib/redis-config.ts');
+    const { clientConfig, error } = buildRedisConfig();
+    expect(error).toBeUndefined();
+    // node-redis defaults the ACL user to 'default'; explicit non-default
+    // usernames are the only ones attached. Password must still be passed.
+    expect(clientConfig?.password).toBe('secret-placeholder');
+    expect(clientConfig?.username).toBeUndefined();
+  });
+
+  it('whitespace-only env values are treated as absent', async () => {
+    vi.stubEnv('REDIS_URL', '   ');
+    vi.stubEnv('REDIS_HOST', '   ');
+    vi.stubEnv('REDIS_PORT', '');
+    const { buildRedisConfig } = await import('@/lib/redis-config.ts');
+    const { clientConfig, error } = buildRedisConfig();
+    expect(error).toBeUndefined();
+    expect(clientConfig).toBeUndefined();
+  });
+
+  it('rediss:// REDIS_URL is passed through with top priority', async () => {
+    vi.stubEnv('REDIS_URL', 'rediss://default:secret-placeholder@cache.example.com:6380');
+    vi.stubEnv('REDIS_HOST', 'ignored.example.com');
+    vi.stubEnv('REDIS_PORT', '6379');
+    vi.stubEnv('REDIS_TLS', '');
+    const { buildRedisConfig } = await import('@/lib/redis-config.ts');
+    const { clientConfig, error } = buildRedisConfig();
+    expect(error).toBeUndefined();
+    expect(clientConfig?.url).toBe('rediss://default:secret-placeholder@cache.example.com:6380');
+  });
+
   it('invalid port is rejected and Redis stays optional', async () => {
     vi.stubEnv('REDIS_HOST', 'localhost');
     vi.stubEnv('REDIS_PORT', 'not-a-port');

@@ -14,6 +14,7 @@ export const AI_ERROR_CODES = {
   AI_TIMEOUT: "AI_TIMEOUT",
   AI_UNAVAILABLE: "AI_UNAVAILABLE",
   AI_INVALID_RESPONSE: "AI_INVALID_RESPONSE",
+  AI_AUTH_ERROR: "AI_AUTH_ERROR",
 } as const;
 
 export type AIErrorCode = (typeof AI_ERROR_CODES)[keyof typeof AI_ERROR_CODES];
@@ -225,6 +226,10 @@ export function parseAISimilarMoviesFromText(content: string) {
 
 /**
  * Map an upstream Gemini failure to a stable internal code + HTTP status.
+ *
+ * Auth failures (400 invalid key/model, 401, 403) get their own code so callers
+ * can distinguish a broken deployment (fix the key/model) from a genuinely bad
+ * gateway. Client responses carry only the code, never upstream bodies or keys.
  */
 export function mapAIError(
   status: number | undefined,
@@ -236,7 +241,12 @@ export function mapAIError(
   if (status === undefined || status >= 500) {
     return { code: AI_ERROR_CODES.AI_UNAVAILABLE, httpStatus: 503 };
   }
-  if (status === 400) return { code: AI_ERROR_CODES.AI_INVALID_RESPONSE, httpStatus: 502 };
+  // 400 from Gemini is almost always an invalid API key, a disabled API, or a
+  // retired/unknown model id. 401/403 are credential/permission denials.
+  // These are deployment-auth problems, not a malformed prompt.
+  if (status === 400 || status === 401 || status === 403) {
+    return { code: AI_ERROR_CODES.AI_AUTH_ERROR, httpStatus: 502 };
+  }
   return { code: AI_ERROR_CODES.AI_INVALID_RESPONSE, httpStatus: 502 };
 }
 
@@ -244,6 +254,7 @@ export function httpStatusForAIError(code: AIErrorCode): number {
   if (code === AI_ERROR_CODES.AI_TIMEOUT) return 504;
   if (code === AI_ERROR_CODES.AI_RATE_LIMITED) return 429;
   if (code === AI_ERROR_CODES.AI_INVALID_RESPONSE) return 502;
+  if (code === AI_ERROR_CODES.AI_AUTH_ERROR) return 502;
   return 503;
 }
 

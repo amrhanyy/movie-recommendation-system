@@ -14,6 +14,7 @@ import {
   extractFencedJson,
   extractGeminiText,
   mapAIError,
+  httpStatusForAIError,
   redactSensitive,
   AIUpstreamError,
 } from '@/lib/ai-security.ts';
@@ -273,7 +274,14 @@ describe('R5-F: AI error mapping and redaction', () => {
     expect(mapAIError(503, false).code).toBe('AI_UNAVAILABLE');
     expect(mapAIError(undefined, true).code).toBe('AI_TIMEOUT');
     expect(mapAIError(undefined, false).code).toBe('AI_UNAVAILABLE');
-    expect(mapAIError(400, false).code).toBe('AI_INVALID_RESPONSE');
+    // Auth-class failures (invalid key/model, denied credentials) get their
+    // own code so callers can distinguish a broken deployment from a bad gateway.
+    expect(mapAIError(400, false).code).toBe('AI_AUTH_ERROR');
+    expect(mapAIError(401, false).code).toBe('AI_AUTH_ERROR');
+    expect(mapAIError(403, false).code).toBe('AI_AUTH_ERROR');
+    expect(mapAIError(400, false).httpStatus).toBe(502);
+    expect(mapAIError(404, false).code).toBe('AI_INVALID_RESPONSE');
+    expect(httpStatusForAIError('AI_AUTH_ERROR')).toBe(502);
   });
 
   it('AIUpstreamError carries a stable code', () => {

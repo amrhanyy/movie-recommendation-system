@@ -78,6 +78,9 @@ const getRedisClient = async (): Promise<RedisClientType | null> => {
 
     redisClient.on('error', (err: Error & { message?: string }) => {
       const message = err?.message || '';
+      // Feed every error into the health monitor so the admin UI reflects
+      // real connection state instead of a stale "healthy".
+      redisHealth.recordError(message);
       if (message.includes(MAX_CLIENTS_ERROR)) {
         connectionBlocked = true;
         lastErrorTime = Date.now();
@@ -85,7 +88,7 @@ const getRedisClient = async (): Promise<RedisClientType | null> => {
         setTimeout(() => {
           connectionBlocked = false;
         }, extendedBlockDuration);
-        const shouldDisable = redisHealth.recordError(message);
+        const shouldDisable = message.includes(MAX_CLIENTS_ERROR) && redisHealth.isDisabled;
         if (shouldDisable) {
           cleanupClient(redisClient).catch(() => {});
           redisClient = null;
@@ -102,7 +105,9 @@ const getRedisClient = async (): Promise<RedisClientType | null> => {
     redisHealth.recordSuccess();
     return redisClient;
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '';
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    // Surface connect/auth/timeout failures to the health monitor.
+    redisHealth.recordError(errorMessage);
     if (errorMessage.includes(MAX_CLIENTS_ERROR)) {
       connectionBlocked = true;
       lastErrorTime = Date.now();

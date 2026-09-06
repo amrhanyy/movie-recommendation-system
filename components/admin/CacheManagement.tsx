@@ -30,7 +30,8 @@ interface CacheStats {
   uptime_in_days?: number
   connected_clients?: number
   hit_rate?: string
-  status?: 'online' | 'offline' | 'error'
+  status?: 'online' | 'offline' | 'fallback-memory' | 'error'
+  backend?: 'redis' | 'memory'
 }
 
 export function CacheManagement() {
@@ -123,12 +124,18 @@ export function CacheManagement() {
   // Render Redis status badge
   const renderStatusBadge = () => {
     const status = stats?.status || 'error'
-    
+
     switch (status) {
       case 'online':
         return (
           <Badge className="ml-2 bg-gradient-to-r from-green-600 to-emerald-500 text-white border-none shadow-md shadow-green-500/20">
             <Check className="h-3 w-3 mr-1" /> Online
+          </Badge>
+        )
+      case 'fallback-memory':
+        return (
+          <Badge className="ml-2 bg-gradient-to-r from-blue-600 to-cyan-500 text-white border-none shadow-md shadow-cyan-500/20">
+            <Check className="h-3 w-3 mr-1" /> Memory Fallback
           </Badge>
         )
       case 'offline':
@@ -155,6 +162,16 @@ export function CacheManagement() {
         {!loading && renderStatusBadge()}
       </div>
       
+      {stats?.status === 'fallback-memory' && (
+        <Alert className="bg-blue-900/30 border-blue-700/50 mb-6 shadow-lg shadow-blue-900/20 backdrop-blur-sm">
+          <AlertCircle className="h-4 w-4 text-blue-400" />
+          <AlertTitle className="text-blue-200">In-Memory Fallback</AlertTitle>
+          <AlertDescription className="text-blue-300">
+            Redis is not connected, so the app is serving cache from memory. Set REDIS_URL (or REDIS_HOST/PORT/PASSWORD) to enable persistent caching.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {stats?.status === 'offline' && (
         <Alert className="bg-red-900/30 border-red-700/50 mb-6 shadow-lg shadow-red-900/20 backdrop-blur-sm">
           <AlertCircle className="h-4 w-4 text-red-400" />
@@ -349,10 +366,10 @@ export function CacheManagement() {
           </div>
         ) : (
           <div className="p-8 text-center text-gray-400 border border-dashed border-gray-700/50 rounded-lg bg-gray-900/20">
-            {stats?.status === 'offline' ? (
+            {stats?.status === 'offline' || stats?.status === 'fallback-memory' ? (
               <div className="flex flex-col items-center gap-2">
                 <XCircle className="h-8 w-8 text-gray-500 opacity-50" />
-                <p>Redis is offline. Unable to fetch keys.</p>
+                <p>{stats?.status === 'fallback-memory' ? 'Using in-memory cache. Unable to fetch Redis keys.' : 'Redis is offline. Unable to fetch keys.'}</p>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-2">

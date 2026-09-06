@@ -14,75 +14,115 @@ import {
 } from '@/lib/ai-security';
 import {
   buildRecommendationGeminiPayload,
+  buildGeminiGenerateUrl,
+  GEMINI_FALLBACK_MODELS,
   GEMINI_GENERATE_URL,
+  getGeminiApiKey,
 } from '@/lib/gemini-payload';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
+/** Safely read a bounded upstream error body for server logs (never client). */
+async function readUpstreamErrorBody(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    return text.slice(0, 500);
+  } catch {
+    return '<unreadable>';
+  }
+}
+
+async function postRecommendationsToGemini(
+  url: string,
+  apiKey: string,
+  preferences: string
+): Promise<Array<{ title: string; confidence?: number; "sub-genre"?: string; type: string }>> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
+    body: JSON.stringify(buildRecommendationGeminiPayload(preferences)),
+  });
+
+  if (!response.ok) {
+    const errorData = await readUpstreamErrorBody(response);
+    console.error('[Gemini Upstream Error]', response.status, errorData);
+    throw new AIUpstreamError(
+      mapAIError(response.status, false).code,
+      `AI service error ${response.status}`
+    );
+  }
+
+  let raw: unknown;
+  try {
+    raw = await response.json();
+  } catch {
+    throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
+  }
+
+  const content = extractGeminiText(raw);
+  if (!content) {
+    throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
+  }
+
+  const validated = parseAIRecommendationsFromText(content);
+  if (!validated) {
+    throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
+  }
+  return validated.recommendations;
+}
 
 async function getAIRecommendations(preferences: string) {
-  if (!GOOGLE_API_KEY) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
     throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
   }
 
   const maxRetries = 3;
   let retryCount = 0;
   let backoffTime = 1000;
+  const urls = [GEMINI_GENERATE_URL, ...GEMINI_FALLBACK_MODELS.map(buildGeminiGenerateUrl)];
+  let urlIndex = 0;
 
   while (retryCount < maxRetries) {
     try {
-      const response = await fetch(GEMINI_GENERATE_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': GOOGLE_API_KEY,
-        },
-        body: JSON.stringify(buildRecommendationGeminiPayload(preferences)),
-      });
-
-      if (!response.ok) {
-        if (response.status === 503 || response.status === 429 || response.status >= 500) {
-          retryCount++;
-          if (retryCount < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, backoffTime));
-            backoffTime *= 2;
-            continue;
-          }
-        }
-        throw new AIUpstreamError(
-          mapAIError(response.status, false).code,
-          `AI service error ${response.status}`
-        );
-      }
-
-      let raw: unknown;
+      // Fall back to legacy models when the configured model is rejected.
+      const url = urls[Math.min(urlIndex, urls.length - 1)];
       try {
-        raw = await response.json();
-      } catch {
-        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
+        return await postRecommendationsToGemini(url, apiKey, preferences);
+      } catch (error) {
+        if (
+          error instanceof AIUpstreamError &&
+          error.code === "AI_AUTH_ERROR" &&
+          urlIndex < urls.length - 1
+        ) {
+          console.error("[Gemini Model Fallback]", url);
+          urlIndex++;
+          continue;
+        }
+        throw error;
       }
-
-      const content = extractGeminiText(raw);
-      if (!content) {
-        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
-      }
-
-      const validated = parseAIRecommendationsFromText(content);
-      if (!validated) {
-        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
-      }
-      return validated.recommendations;
     } catch (error) {
-      retryCount++;
       if (
-        retryCount < maxRetries &&
         error instanceof AIUpstreamError &&
-        error.code === "AI_UNAVAILABLE"
+        (error.code === "AI_UNAVAILABLE" || error.code === "AI_RATE_LIMITED")
       ) {
+        retryCount++;
+        if (retryCount < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, backoffTime));
+          backoffTime *= 2;
+          continue;
+        }
+      }
+      if (error instanceof AIUpstreamError) {
+        throw error;
+      }
+      retryCount++;
+      if (retryCount < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, backoffTime));
         backoffTime *= 2;
-      } else if (error instanceof AIUpstreamError) {
-        throw error;
       } else {
         console.error('AI request failed');
         return [];

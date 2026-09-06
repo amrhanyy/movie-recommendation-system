@@ -37,13 +37,17 @@ export interface RedisConfigResult {
 }
 
 export function buildRedisConfig(env: NodeJS.ProcessEnv = process.env): RedisConfigResult {
-  const url = env.REDIS_URL;
-  const host = env.REDIS_HOST;
+  const rawUrl = env.REDIS_URL?.trim() || undefined;
+  const host = env.REDIS_HOST?.trim() || undefined;
   const port = parsePort(env.REDIS_PORT);
-  const username = env.REDIS_USERNAME;
+  // Redis Cloud / ACL auth requires the 'default' user when only a password
+  // is provisioned. Default here so hosted instances connect without forcing
+  // every deployment to set REDIS_USERNAME explicitly.
+  const username = env.REDIS_USERNAME?.trim() || (env.REDIS_PASSWORD ? 'default' : undefined);
   const password = env.REDIS_PASSWORD;
   const tls = parseStrictBoolean(env.REDIS_TLS);
 
+  const url = rawUrl;
   if (url) {
     // REDIS_URL takes precedence over individual fields (documented).
     // rediss:// implies TLS. redis:// with REDIS_TLS=true is refused when the
@@ -58,6 +62,8 @@ export function buildRedisConfig(env: NodeJS.ProcessEnv = process.env): RedisCon
     return {
       clientConfig: {
         url,
+        // rediss:// URLs carry TLS in the scheme; node-redis honors it from
+        // the URL directly, so no extra socket.tls is required here.
         socket: {
           connectTimeout: 3000,
           reconnectStrategy: (retry: number) =>
@@ -90,8 +96,9 @@ export function buildRedisConfig(env: NodeJS.ProcessEnv = process.env): RedisCon
     commandsQueueMaxLength: 5,
     disableOfflineQueue: true,
   };
-  // When no username is configured, the redis client defaults the ACL
-  // username to "default"; never hardcode a username when one is configured.
+  // Redis Cloud provisions ACL auth as user 'default' + password. The node-redis
+  // client defaults to 'default' when no username is set, so only attach an
+  // explicit non-default username.
   if (username && username !== 'default') {
     clientConfig.username = username;
   }

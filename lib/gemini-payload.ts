@@ -6,8 +6,22 @@ import {
   MAX_TMDB_OVERVIEW_CHARS,
 } from "./ai-security";
 
-export const GEMINI_GENERATE_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+export const GEMINI_MODEL =
+  (process.env.GEMINI_MODEL || "gemini-2.0-flash").trim() || "gemini-2.0-flash";
+
+export const GEMINI_FALLBACK_MODELS = ["gemini-1.5-flash"] as const;
+
+export function buildGeminiGenerateUrl(model: string): string {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
+
+export const GEMINI_GENERATE_URL = buildGeminiGenerateUrl(GEMINI_MODEL);
+
+/** Trimmed server key accessor: never put the key in a URL or response body. */
+export function getGeminiApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const key = env.GOOGLE_API_KEY?.trim();
+  return key ? key : undefined;
+}
 
 export interface ChatTurn {
   role: "user" | "assistant";
