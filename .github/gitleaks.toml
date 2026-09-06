@@ -1,0 +1,29 @@
+# Gitleaks configuration (R7).
+#
+# - Scans git history and the working tree.
+# - Uses gitleaks' default secret rules (Google API keys, OAuth client secrets,
+#   MongoDB/Redis credentials, JWT secrets, generic keys). NO broad allowlists.
+# - Allowlist is narrow and exact, limited to documented PUBLIC placeholder
+#   files and the placeholder strings used in them and in test fixtures. These
+#   files/strings contain no real values, no key prefixes, and no hosts.
+#
+# Do not add real secret rules or allowlists here.
+
+[extend]
+useDefault = true
+
+# Global allowlist (explicit, documented placeholders only).
+[allowlist]
+description = "Explicit public placeholder files and strings only"
+paths = [
+  # .env.example is a committed public example with no real values.
+  '''^\.env\.example$''',
+  # Test fixtures and helpers use obvious non-secret placeholders.
+  '''^tests/.*''',
+]
+regexes = [
+  '''REPLACE_WITH_32_PLUS_CHARACTERS''',
+  '''https://your-production-domain\.invalid''',
+  '''https://ci-placeholder\.invalid''',
+  '''mongodb://ci-placeholder\.invalid/ci''',
+]

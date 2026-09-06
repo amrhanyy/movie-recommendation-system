@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
@@ -6,7 +7,13 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY
 // Common streaming services IDs (Netflix, Amazon Prime, Disney+, Apple TV+, Hulu)
 const STREAMING_SERVICES = '8|9|337|350|384'
 
-const getEndpoint = (filter: string) => {
+// M-03: filter values are matched against this strict allowlist; unknown
+// values fall back to the safe default. This prevents upstream query tampering.
+const ALLOWED_FILTERS = ['streaming', 'on tv', 'for rent', 'in theaters', 'popular'] as const
+
+type TrailerFilter = (typeof ALLOWED_FILTERS)[number]
+
+const getEndpoint = (filter: TrailerFilter) => {
   switch (filter) {
     case 'streaming':
       return {
@@ -37,10 +44,25 @@ const getEndpoint = (filter: string) => {
   }
 }
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
+  // Rate limit public TMDB proxy (M-03) — strict limit: this route fans out
+  // to 1 + up to 10 upstream calls per request
+  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxyStrict);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
+
+  if (!TMDB_API_KEY) {
+    return NextResponse.json({ error: 'Upstream service unavailable' }, { status: 503 })
+  }
+
   try {
     const { searchParams } = new URL(request.url)
-    const filter = (searchParams.get('filter') || 'popular').toLowerCase()
+    const rawFilter = (searchParams.get('filter') || 'popular').toLowerCase()
+    // M-03: only accept known filter values, else default to 'popular'
+    const filter: TrailerFilter = (ALLOWED_FILTERS as readonly string[]).includes(rawFilter)
+      ? (rawFilter as TrailerFilter)
+      : 'popular'
     const { url, params } = getEndpoint(filter)
 
     const moviesRes = await fetch(
@@ -54,15 +76,17 @@ export async function GET(request: Request) {
     )
 
     if (!moviesRes.ok) {
+      // L-07: log the upstream detail server-side, return a fixed message
       const errorText = await moviesRes.text()
       console.error('Movies fetch failed:', errorText)
-      return NextResponse.json({ error: 'Failed to fetch movies' }, { status: moviesRes.status })
+      const status = moviesRes.status >= 400 && moviesRes.status < 500 ? moviesRes.status : 502
+      return NextResponse.json({ error: 'Failed to fetch movies' }, { status })
     }
-    
+
     const contentType = moviesRes.headers.get('content-type')
     if (!contentType?.includes('application/json')) {
       console.error('Invalid content type:', contentType)
-      return NextResponse.json({ error: 'Invalid response from movie service' }, { status: 500 })
+      return NextResponse.json({ error: 'Invalid response from upstream service' }, { status: 500 })
     }
 
     const moviesData = await moviesRes.json()
@@ -72,7 +96,17 @@ export async function GET(request: Request) {
 
     // Fetch trailers for each movie
     const moviesWithTrailers = await Promise.all(
-      moviesData.results.slice(0, 10).map(async (movie: any) => {
+      moviesData.results.slice(0, 10).map(async (movie: {
+          id: number;
+          title?: string;
+          name?: string;
+          overview?: string;
+          poster_path?: string;
+          backdrop_path?: string;
+          release_date?: string;
+          first_air_date?: string;
+          vote_average?: number;
+        }) => {
         try {
           const mediaType = url.includes('/tv/') ? 'tv' : 'movie'
           const videosRes = await fetch(
@@ -84,11 +118,11 @@ export async function GET(request: Request) {
               }
             }
           )
-          
+
           if (!videosRes.ok) return null
           const videosData = await videosRes.json()
-          
-          const trailer = videosData.results?.find((video: any) => 
+
+          const trailer = videosData.results?.find((video: { type: string; site: string }) =>
             video.type === 'Trailer' && video.site === 'YouTube'
           ) || videosData.results?.[0]
 

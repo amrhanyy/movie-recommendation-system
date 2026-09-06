@@ -213,12 +213,14 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                                     transform group-hover:scale-105 transition-all duration-300 
                                     border border-gray-700/50">
                           <Image
-                            src={movie.poster_path 
+                            src={movie.poster_path
                               ? `https://image.tmdb.org/t/p/w342${movie.poster_path}`
-                              : '/placeholder-poster.png'
+                              : '/images/placeholder-poster.png'
                             }
                             alt={movie.title}
                             fill
+                            sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 16vw"
+                            loading="lazy"
                             className="object-cover"
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -263,7 +265,7 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                           <Image
                             src={show.poster_path 
                               ? `https://image.tmdb.org/t/p/w342${show.poster_path}`
-                              : '/placeholder-poster.png'
+                              : '/images/placeholder-poster.png'
                             }
                             alt={show.name}
                             fill

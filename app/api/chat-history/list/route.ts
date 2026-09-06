@@ -1,25 +1,31 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { requireSession } from '@/lib/security/auth';
 import connectToMongoDB from '@/lib/mongodb';
 import { ChatHistory } from '@/lib/models/ChatHistory';
+import { chatCutoffDate } from '@/lib/privacy-retention';
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireSession();
+    if (!authResult.ok) {
+      return authResult.response;
     }
 
     await connectToMongoDB();
-    
-    const chats = await ChatHistory.find({ userId: session.user.email })
+
+    // R6: ownership-scoped and retention-filtered list.
+    const chats = await ChatHistory.find({
+      userId: authResult.user.email,
+      updatedAt: { $gte: chatCutoffDate() },
+    })
       .sort({ updatedAt: -1 })
       .lean();
 
     return NextResponse.json(chats);
-  } catch (error) {
-    console.error('Chat History List error:', error);
-    return NextResponse.json({ error: 'Failed to fetch chat history' }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: 'Failed to fetch chat history' },
+      { status: 500 }
+    );
   }
 }

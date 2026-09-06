@@ -9,6 +9,7 @@ import { LoadingSpinner } from "../../components/LoadingSpinner"
 import WatchHistory from "../../components/WatchHistory"
 import Watchlist from "../../components/Watchlist"
 import { Favorites } from '../../components/Favorites'
+import { PrivacySettings } from '../../components/PrivacySettings'
 import Link from 'next/link'
 
 export default function ProfilePage() {
@@ -87,6 +88,9 @@ export default function ProfilePage() {
           </div>
           <Favorites limit={6} />
         </div>
+
+        {/* Privacy controls */}
+        <PrivacySettings />
       </div>
     </div>
   )

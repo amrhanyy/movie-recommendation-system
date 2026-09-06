@@ -2,9 +2,10 @@
 
 import React, { useEffect, useState, use } from 'react'
 import Image from 'next/image'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Bookmark } from 'lucide-react'
-import { useSession, signIn } from 'next-auth/react'
+import { useWatchlistContext } from '@/contexts/WatchlistContext'
 
 interface Content {
   id: number
@@ -37,71 +38,16 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
   const searchParams = useSearchParams()
   const { id } = use(params)
   const contentType = searchParams.get('type') || 'movie'
-  const { data: session } = useSession()
-  const [watchlistItems, setWatchlistItems] = useState<Set<number>>(new Set())
+  const { isInWatchlist, toggleWatchlist } = useWatchlistContext()
 
-  const fetchWatchlistStatus = async () => {
-    try {
-      const response = await fetch('/api/watchlist');
-      if (response.ok) {
-        const data = await response.json();
-        const itemIds = new Set<number>(data
-          .filter((item: { itemId: number }) => typeof item.itemId === 'number')
-          .map((item: { itemId: number }) => Number(item.itemId))
-        );
-        setWatchlistItems(itemIds);
-      }
-    } catch (error) {
-      console.error('Error fetching watchlist status:', error);
-    }
-  };
-
-  const handleWatchlistToggle = async (item: Content, e: React.MouseEvent) => {
+  const handleWatchlistToggle = (item: Content, e: React.MouseEvent) => {
     e.stopPropagation();
-    
-    if (!session) {
-      signIn();
-      return;
-    }
-    
-    try {
-      // Check if item is already in watchlist
-      const isInWatchlist = watchlistItems.has(item.id);
-      
-      if (isInWatchlist) {
-        // If it's in watchlist, remove it
-        const response = await fetch(`/api/watchlist?itemId=${item.id}&type=${contentType}`, {
-          method: 'DELETE'
-        });
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        // If it's not in watchlist, add it
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: item.id,
-            type: contentType,
-            title: item.title || item.name,
-            posterPath: item.poster_path
-          }),
-        });
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems(prev => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(item.id);
-        } else {
-          newSet.add(item.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: item.id,
+      type: contentType as 'movie' | 'tv',
+      title: item.title || item.name || '',
+      posterPath: item.poster_path
+    });
   };
 
   const loadMore = async () => {
@@ -227,12 +173,6 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
     }
   }, [hasMore, isLoading, isLoadingMore, page])
 
-  useEffect(() => {
-    if (session?.user?.email) {
-      fetchWatchlistStatus();
-    }
-  }, [session?.user?.email]);
-
   if (error) {
     return (
       <div className="container-fluid py-4 px-2 max-w-[2000px] mx-auto">
@@ -248,10 +188,11 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
         {content.length > 0 && (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
             {content.map((item) => (
-              <div
+              <Link
                 key={item.uniqueKey || item.id}
-                className="group relative aspect-[2/3] rounded-lg overflow-hidden cursor-pointer"
-                onClick={() => router.push(`/${contentType}/${item.id}`)}
+                href={`/${contentType}/${item.id}`}
+                aria-label={`View details for ${item.title || item.name || 'title'}`}
+                className="group relative aspect-[2/3] rounded-lg overflow-hidden block focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
               >
                 <Image
                   src={`https://image.tmdb.org/t/p/w500${item.poster_path}`}
@@ -282,18 +223,21 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={(e) => handleWatchlistToggle(item, e)}
+                  aria-pressed={isInWatchlist(item.id)}
+                  aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
                   className="group/tooltip absolute top-2 right-2 p-2 rounded-full
                             bg-black/50 backdrop-blur-sm border border-gray-700/50
                             text-white hover:bg-black/70 hover:scale-110
-                            transition-all duration-300 z-10"
+                            transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                 >
-                  <Bookmark 
-                    className={`w-4 h-4 ${watchlistItems.has(item.id) ? 'fill-white' : ''}`} 
+                  <Bookmark
+                    className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
                   />
-                  
+
                 </button>
-              </div>
+              </Link>
             ))}
           </div>
         )}
@@ -349,10 +293,11 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
 
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
         {content.map((item) => (
-          <div
+          <Link
             key={item.uniqueKey || item.id}
-            className="group relative aspect-[2/3] rounded-lg overflow-hidden cursor-pointer"
-            onClick={() => router.push(`/${contentType}/${item.id}`)}
+            href={`/${contentType}/${item.id}`}
+            aria-label={`View details for ${item.title || item.name || 'title'}`}
+            className="group relative aspect-[2/3] rounded-lg overflow-hidden block focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
           >
             <Image
               src={`https://image.tmdb.org/t/p/w500${item.poster_path}`}
@@ -383,18 +328,21 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
               </div>
             </div>
             <button
+              type="button"
               onClick={(e) => handleWatchlistToggle(item, e)}
+              aria-pressed={isInWatchlist(item.id)}
+              aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
               className="group/tooltip absolute top-2 right-2 p-2 rounded-full
                         bg-black/50 backdrop-blur-sm border border-gray-700/50
                         text-white hover:bg-black/70 hover:scale-110
-                        transition-all duration-300 z-10"
+                        transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
-              <Bookmark 
-                className={`w-4 h-4 ${watchlistItems.has(item.id) ? 'fill-white' : ''}`} 
+              <Bookmark
+                className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
               />
-              
+
             </button>
-          </div>
+          </Link>
         ))}
       </div>
 

@@ -8,7 +8,9 @@ interface PageWrapperProps {
 
 const PageWrapper: React.FC<PageWrapperProps> = ({ children }) => {
     return (
-        <main className="min-h-screen px-4 py-8 md:px-8">
+        // A6: avoid a nested <main> landmark. The root layout provides the
+        // single <main>; this is a labelled region instead.
+        <div role="region" aria-label="Page content" className="min-h-screen px-4 py-8 md:px-8">
             <div className="">
                 <Suspense fallback={
                     <div className="flex items-center justify-center h-screen">
@@ -18,7 +20,7 @@ const PageWrapper: React.FC<PageWrapperProps> = ({ children }) => {
                     {children}
                 </Suspense>
             </div>
-        </main>
+        </div>
     );
 }
 

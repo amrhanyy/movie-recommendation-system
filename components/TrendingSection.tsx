@@ -2,10 +2,9 @@
 import React from "react"
 import { useState, useRef, useEffect } from 'react'
 import Image from 'next/image'
-import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { ChevronLeft, ChevronRight, Bookmark } from 'lucide-react'
-import { LoadingSpinner } from '@/components/LoadingSpinner'
-import { useSession, signIn } from 'next-auth/react'
+import { useWatchlistContext } from '@/contexts/WatchlistContext'
 
 interface MediaItem {
   id: number
@@ -21,35 +20,18 @@ interface MediaItem {
 }
 
 export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] }) {
-  const { data: session } = useSession()
+  const { isInWatchlist, toggleWatchlist } = useWatchlistContext()
   const [timeWindow, setTimeWindow] = useState<'day' | 'week'>('day')
   const [mediaItems, setMediaItems] = useState<MediaItem[]>(initialMovies)
   const [isLoading, setIsLoading] = useState(false)
   const [activeItem, setActiveItem] = useState<MediaItem | null>(null)
-  const [watchlistItems, setWatchlistItems] = useState<Set<number>>(new Set())
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const router = useRouter()
-
-  const fetchWatchlistStatus = async () => {
-    try {
-      const response = await fetch('/api/watchlist');
-      if (response.ok) {
-        const data = await response.json();
-        const itemIds = new Set(data
-          .filter((item: { itemId: number }) => typeof item.itemId === 'number')
-          .map((item: { itemId: number }) => item.itemId)) as Set<number>;
-        setWatchlistItems(itemIds);
-      }
-    } catch (error) {
-      console.error('Error fetching watchlist status:', error);
-    }
-  };
+  const scrollContainerRef = useRef<HTMLUListElement>(null)
 
   const handleTimeWindowChange = async (newWindow: 'day' | 'week') => {
     try {
       setIsLoading(true)
       setTimeWindow(newWindow)
-      
+
       // Fetch both movies and TV shows
       const [moviesRes, tvRes] = await Promise.all([
         fetch(`/api/trending/movie?time_window=${newWindow}`),
@@ -63,11 +45,11 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
 
       // Combine and process the results
       const combinedResults = [
-        ...moviesData.results.map((item: any) => ({ ...item, media_type: 'movie' })),
-        ...tvData.results.map((item: any) => ({ 
-          ...item, 
-          media_type: 'tv',
-          title: item.name 
+        ...moviesData.results.map((item: Omit<MediaItem, 'media_type'>) => ({ ...item, media_type: 'movie' as const })),
+        ...tvData.results.map((item: Omit<MediaItem, 'media_type'>) => ({
+          ...item,
+          media_type: 'tv' as const,
+          title: item.name
         }))
       ].sort((a, b) => b.popularity - a.popularity)
 
@@ -90,57 +72,18 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
     }
   };
 
-  const handleWatchlistToggle = async (item: MediaItem, e: React.MouseEvent) => {
+  const handleWatchlistToggle = (item: MediaItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    
-    if (!session) {
-      signIn();
-      return;
-    }
-    
-    try {
-      // Check if item is already in watchlist
-      const isInWatchlist = watchlistItems.has(item.id);
-      
-      if (isInWatchlist) {
-        // If it's in watchlist, remove it
-        const response = await fetch(`/api/watchlist?itemId=${item.id}&type=${item.media_type}`, {
-          method: 'DELETE'
-        });
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        // If it's not in watchlist, add it
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: item.id,
-            type: item.media_type,
-            title: item.title || item.name,
-            posterPath: item.poster_path
-          }),
-        });
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems(prev => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(item.id);
-        } else {
-          newSet.add(item.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: item.id,
+      type: item.media_type,
+      title: item.title || item.name || '',
+      posterPath: item.poster_path
+    });
   };
 
   useEffect(() => {
     handleTimeWindowChange('day')
-    fetchWatchlistStatus();
   }, [])
 
   if (isLoading) {
@@ -175,10 +118,11 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
               <p className="text-gray-400 mt-1">Most popular content this week</p>
             </div>
           </div>
-          <div className="flex bg-gray-800/30 backdrop-blur-xl rounded-xl p-1 border border-gray-700/50">
+          <div className="flex bg-gray-800/30 backdrop-blur-xl rounded-xl p-1 border border-gray-700/50" role="group" aria-label="Trending time range">
             <button
               onClick={() => handleTimeWindowChange('day')}
-              className={`px-6 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
+              aria-pressed={timeWindow === 'day'}
+              className={`px-6 py-2 rounded-lg text-sm font-medium transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
                 timeWindow === 'day'
                   ? 'bg-cyan-500/20 text-cyan-400 shadow-lg shadow-cyan-500/20'
                   : 'text-gray-400 hover:text-white hover:bg-white/5'
@@ -188,7 +132,8 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
             </button>
             <button
               onClick={() => handleTimeWindowChange('week')}
-              className={`px-6 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
+              aria-pressed={timeWindow === 'week'}
+              className={`px-6 py-2 rounded-lg text-sm font-medium transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
                 timeWindow === 'week'
                   ? 'bg-cyan-500/20 text-cyan-400 shadow-lg shadow-cyan-500/20'
                   : 'text-gray-400 hover:text-white hover:bg-white/5'
@@ -201,88 +146,97 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
 
         <div className="relative group">
           {/* Left scroll button */}
-          <button 
+          <button
+            type="button"
             onClick={() => scroll('left')}
-            className="absolute left-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full 
-                      opacity-0 group-hover:opacity-100 transition-opacity duration-300 backdrop-blur-sm"
+            aria-label="Scroll left"
+            className="absolute left-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full
+                      opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
+                      transition-opacity duration-300 backdrop-blur-sm"
           >
             <ChevronLeft className="w-6 h-6" />
           </button>
 
           {/* Right scroll button */}
-          <button 
+          <button
+            type="button"
             onClick={() => scroll('right')}
-            className="absolute right-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full 
-                      opacity-0 group-hover:opacity-100 transition-opacity duration-300 backdrop-blur-sm"
+            aria-label="Scroll right"
+            className="absolute right-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full
+                      opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
+                      transition-opacity duration-300 backdrop-blur-sm"
           >
             <ChevronRight className="w-6 h-6" />
           </button>
 
           <div className="relative overflow-x-auto scrollbar-hide">
-            <div 
+            <ul
               ref={scrollContainerRef}
-              className="flex space-x-6 px-4 pb-4 overflow-x-auto scroll-smooth"
+              className="flex space-x-6 px-4 pb-4 overflow-x-auto scroll-smooth list-none"
             >
               {mediaItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="relative flex-none w-[200px] first:ml-2 last:mr-2"
-                  onClick={() => router.push(`/${item.media_type}/${item.id}`)}
-                  onMouseEnter={() => setActiveItem(item)}
-                  onMouseLeave={() => setActiveItem(null)}
-                >
-                  <div className="relative aspect-[2/3] rounded-xl overflow-hidden group cursor-pointer">
-                    <Image
-                      src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}
-                      alt={item.title || item.name || ''}
-                      fill
-                      className="object-cover transform group-hover:scale-105 transition-all duration-300"
-                      sizes="200px"
-                    />
-                    
-                    <button
-                      onClick={(e) => handleWatchlistToggle(item, e)}
-                      className="group/tooltip absolute top-2 right-2 p-2 rounded-full
-                                bg-black/50 backdrop-blur-sm border border-gray-700/50
-                                text-white hover:bg-black/70 hover:scale-110
-                                transition-all duration-300 z-10"
-                    >
-                      <Bookmark 
-                        className={`w-4 h-4 ${watchlistItems.has(item.id) ? 'fill-white' : ''}`} 
+                <li key={item.id} className="relative flex-none w-[200px] first:ml-2 last:mr-2">
+                  <Link
+                    href={`/${item.media_type}/${item.id}`}
+                    aria-label={`View details for ${item.title || item.name || 'title'}`}
+                    onMouseEnter={() => setActiveItem(item)}
+                    onMouseLeave={() => setActiveItem(null)}
+                    className="group block focus:outline-none"
+                  >
+                    <div className="relative aspect-[2/3] rounded-xl overflow-hidden">
+                      <Image
+                        src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}
+                        alt={item.title || item.name || ''}
+                        fill
+                        className="object-cover transform group-hover:scale-105 transition-all duration-300"
+                        sizes="200px"
                       />
-                      
-                  
-                    </button>
 
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
+                      <button
+                        type="button"
+                        onClick={(e) => handleWatchlistToggle(item, e)}
+                        aria-pressed={isInWatchlist(item.id)}
+                        aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
+                        className="group/tooltip absolute top-2 right-2 p-2 rounded-full
+                                  bg-black/50 backdrop-blur-sm border border-gray-700/50
+                                  text-white hover:bg-black/70 hover:scale-110
+                                  transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+                      >
+                        <Bookmark
+                          className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
+                        />
+                      </button>
+
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent
                                   opacity-0 group-hover:opacity-100 transition-all duration-500">
-                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(0,200,255,0.1),transparent_70%)]" />
-                      <div className="absolute bottom-0 left-0 right-0 p-4">
-                        <div className="relative z-10">
-                          <h3 className="text-white font-medium text-sm line-clamp-2 mb-2">
-                            {item.title || item.name}
-                          </h3>
-                          <div className="flex items-center gap-2">
-                            <div className="px-2 py-1 rounded-md bg-cyan-500/20 backdrop-blur-sm border border-cyan-500/20">
-                              <span className="text-cyan-400 text-xs">
-                                {new Date(item.release_date || item.first_air_date || '').getFullYear()}
-                              </span>
-                            </div>
-                            <div className="w-8 h-8 rounded-lg bg-black/50 backdrop-blur-sm flex items-center justify-center border border-cyan-500/20">
-                              <div className="text-sm font-bold text-cyan-400">
-                                {item.vote_average.toFixed(1)}
+                        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(0,200,255,0.1),transparent_70%)]" />
+                        <div className="absolute bottom-0 left-0 right-0 p-4">
+                          <div className="relative z-10">
+                            <h3 className="text-white font-medium text-sm line-clamp-2 mb-2">
+                              {item.title || item.name}
+                            </h3>
+                            <div className="flex items-center gap-2">
+                              <div className="px-2 py-1 rounded-md bg-cyan-500/20 backdrop-blur-sm border border-cyan-500/20">
+                                <span className="text-cyan-400 text-xs">
+                                  {new Date(item.release_date || item.first_air_date || '').getFullYear()}
+                                </span>
+                              </div>
+                              <div className="w-8 h-8 rounded-lg bg-black/50 backdrop-blur-sm flex items-center justify-center border border-cyan-500/20">
+                                <div className="text-sm font-bold text-cyan-400">
+                                  {item.vote_average.toFixed(1)}
+                                </div>
                               </div>
                             </div>
                           </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/0 via-cyan-500/25 to-cyan-500/0 opacity-0 group-hover:opacity-100 blur-xl transition-opacity duration-500" />
-                  </div>
-                </div>
+                      <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/0 via-cyan-500/25 to-cyan-500/0 opacity-0 group-hover:opacity-100 blur-xl transition-opacity duration-500" />
+                    </div>
+                  </Link>
+                </li>
               ))}
-            </div>
+            </ul>
           </div>
         </div>
       </div>

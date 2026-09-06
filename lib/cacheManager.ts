@@ -1,162 +1,132 @@
-import redisCache from './cache';
+import redisCache, { type CacheClearResult } from './cache';
 import getRedisClient from './redis';
+import {
+  CACHE_NAMESPACE,
+  MAX_SCAN_RESULTS,
+  isNamespacedKey,
+  buildCacheKey,
+  CACHE_SCOPES,
+} from './cache-namespace';
 
 /**
- * Utility functions to manage Redis caching for the application
+ * Utility functions to manage Redis caching for the application.
+ *
+ * Security (F-009 / F-052):
+ * - clearAllCache is prefix-scoped; FLUSHDB/FLUSHALL are never called.
+ * - findCacheKeys uses bounded SCAN; redis.keys() is never called.
  */
 export const cacheManager = {
   /**
-   * Invalidate (clear) cache for a specific movie
-   * @param movieId The movie ID to invalidate cache for
+   * Invalidate (clear) cache for a specific movie.
    */
   async invalidateMovieCache(movieId: string): Promise<void> {
-    console.log(`Invalidating cache for movie: ${movieId}`);
-    
-    // Get all related cache keys
+    const id = String(movieId).slice(0, 50);
     const cacheKeys = [
-      `movie:${movieId}:details`,
-      `movie:${movieId}:recommendations`,
-      `movie:${movieId}:similar`
+      `movie:${id}:details`,
+      `movie:${id}:recommendations`,
+      `movie:${id}:similar`
     ];
-    
-    // Delete all cache keys
     await Promise.all(cacheKeys.map(key => redisCache.delete(key)));
   },
-  
+
   /**
-   * Invalidate (clear) cache for a specific TV show
-   * @param tvId The TV show ID to invalidate cache for
+   * Invalidate (clear) cache for a specific TV show.
    */
   async invalidateTVCache(tvId: string): Promise<void> {
-    console.log(`Invalidating cache for TV show: ${tvId}`);
-    
-    // Get all related cache keys
+    const id = String(tvId).slice(0, 50);
     const cacheKeys = [
-      `tv:${tvId}:details`,
-      `tv:${tvId}:recommendations`,
-      `tv:${tvId}:similar`
+      `tv:${id}:details`,
+      `tv:${id}:recommendations`,
+      `tv:${id}:similar`
     ];
-    
-    // Delete all cache keys
     await Promise.all(cacheKeys.map(key => redisCache.delete(key)));
   },
-  
+
   /**
-   * Invalidate home page caches (popular/top-rated movies and shows)
+   * Invalidate home page caches (popular/top-rated movies and shows).
    */
   async invalidateHomeCache(): Promise<void> {
-    console.log('Invalidating home page caches');
-    
     const cacheKeys = [
       'movies:home',
       'tv:top-rated'
     ];
-    
     await Promise.all(cacheKeys.map(key => redisCache.delete(key)));
   },
-  
+  invalidateCacheKey: async (key: string): Promise<void> => {
+    await redisCache.delete(key);
+  },
+
   /**
-   * Safe wrapper to execute Redis command with proper error handling
+   * Safe wrapper to execute a Redis command with proper error handling.
    * (Internal use only)
-   * @param operation Function to execute a Redis operation
-   * @param defaultValue Default value to return if operation fails
-   * @param operationName Optional name of the operation for logging
    */
   async safeRedisOp<T>(
-    operation: (redis: any) => Promise<T>,
+    operation: (redis: NonNullable<Awaited<ReturnType<typeof getRedisClient>>>) => Promise<T>,
     defaultValue: T,
     operationName?: string
   ): Promise<T> {
     try {
       const redis = await getRedisClient();
-      
+
       if (!redis || !redis.isOpen) {
-        // Only log this once per operation set rather than for each call
         return defaultValue;
       }
-      
+
       return await operation(redis);
     } catch (error) {
-      const err = error as Error;
-      
-      // Only log detailed errors for unexpected errors, not for known offline condition
+      const err = error instanceof Error ? error : new Error(String(error));
+
       if (err.message !== 'The client is offline') {
         console.error(`Redis operation ${operationName ? `'${operationName}'` : ''} failed:`, err);
       }
-      
+
       return defaultValue;
     }
   },
-  
+
   /**
-   * Get cache stats (number of keys, memory usage)
-   * @returns Cache statistics or placeholder values if Redis is offline
+   * Get cache stats (number of keys, memory usage).
+   * Returns only sanitized aggregate metrics - never raw key names or secrets.
    */
-  async getCacheStats(): Promise<any> {
+  async getCacheStats(): Promise<Record<string, unknown>> {
+    const offline = {
+      totalKeys: 0,
+      memory: { used_memory_human: 'N/A (Redis offline)', used_memory_peak_human: 'N/A' },
+      keyspace: { db0: 'N/A' },
+      uptime_in_days: 0,
+      connected_clients: 0,
+      hit_rate: 'N/A',
+      status: 'offline',
+    };
     try {
       const redis = await getRedisClient();
-      
-      // If Redis is offline, return placeholder values immediately without trying operations
+
       if (!redis || !redis.isOpen) {
-        console.warn('Redis is offline, returning placeholder cache stats');
-        return {
-          totalKeys: 0,
-          memory: {
-            used_memory_human: 'N/A (Redis offline)',
-            used_memory_peak_human: 'N/A'
-          },
-          keyspace: {
-            db0: 'N/A'
-          },
-          uptime_in_days: 0,
-          connected_clients: 0,
-          hit_rate: 'N/A',
-          status: 'offline'
-        };
+        return offline;
       }
-      
-      // Get all Redis info with safe operations
+
       const keysCount = await this.safeRedisOp(r => r.dbSize(), 0, 'dbSize');
       const memoryInfo = await this.safeRedisOp(r => r.info('memory'), '', 'info(memory)');
-      
-      // Quick check after first operation - if it failed, Redis might have gone offline
-      // after our initial check but before we could complete operations
+
       if (memoryInfo === '') {
-        console.warn('Redis appears to be offline after connection check');
-        return {
-          totalKeys: 0,
-          memory: {
-            used_memory_human: 'N/A (Redis connection lost)',
-            used_memory_peak_human: 'N/A'
-          },
-          keyspace: {
-            db0: 'N/A'
-          },
-          uptime_in_days: 0,
-          connected_clients: 0,
-          hit_rate: 'N/A',
-          status: 'offline'
-        };
+        return offline;
       }
-      
-      // Continue with other operations since Redis appears to be working
+
       const serverInfo = await this.safeRedisOp(r => r.info('server'), '', 'info(server)');
       const clientsInfo = await this.safeRedisOp(r => r.info('clients'), '', 'info(clients)');
       const statsInfo = await this.safeRedisOp(r => r.info('stats'), '', 'info(stats)');
-      
-      // Parse info responses
+
       const memoryMatch = memoryInfo.match(/used_memory_human:([^\r\n]+)/);
       const memoryPeakMatch = memoryInfo.match(/used_memory_peak_human:([^\r\n]+)/);
       const uptimeMatch = serverInfo.match(/uptime_in_days:([^\r\n]+)/);
       const connectedClientsMatch = clientsInfo.match(/connected_clients:([^\r\n]+)/);
       const keyspaceHitsMatch = statsInfo.match(/keyspace_hits:([^\r\n]+)/);
       const keyspaceMissesMatch = statsInfo.match(/keyspace_misses:([^\r\n]+)/);
-      
-      // Calculate hit rate
+
       const hits = keyspaceHitsMatch ? parseInt(keyspaceHitsMatch[1], 10) : 0;
       const misses = keyspaceMissesMatch ? parseInt(keyspaceMissesMatch[1], 10) : 0;
       const hitRate = hits + misses > 0 ? ((hits / (hits + misses)) * 100).toFixed(2) + '%' : 'N/A';
-      
+
       return {
         totalKeys: keysCount,
         memory: {
@@ -170,50 +140,75 @@ export const cacheManager = {
       };
     } catch (error) {
       console.error('Error getting cache stats:', error);
-      
-      // Return placeholder values on error
-      return {
-        totalKeys: 0,
-        memory: {
-          used_memory_human: 'Error',
-          used_memory_peak_human: 'Error'
-        },
-        uptime_in_days: 0,
-        connected_clients: 0,
-        hit_rate: 'Error',
-        status: 'error'
-      };
+      return { ...offline, status: 'error' };
     }
   },
-  
+
   /**
-   * Clear all cache data (use with caution)
+   * Clear application-scoped cache entries only.
+   * Never wipes the Redis database (no FLUSHDB).
    */
-  async clearAllCache(): Promise<void> {
-    console.log('Clearing all Redis cache data');
-    await redisCache.clear();
+  async clearAllCache(): Promise<CacheClearResult> {
+    const result = await redisCache.clearScoped(`${CACHE_NAMESPACE}*`);
+    console.log('Cleared application-scoped cache entries');
+    return result;
   },
-  
+
   /**
-   * Find all cache keys matching a pattern
-   * @param pattern Pattern to match (e.g., 'movie:*')
-   * @returns Array of matching keys or empty array if Redis is offline
+   * Find application cache keys matching an INTERNAL pattern.
+   * The caller passes a scope (from CACHE_SCOPES) or a literal sub-pattern that
+   * is normalized server-side. Bounded SCAN - never redis.keys().
    */
   async findCacheKeys(pattern: string): Promise<string[]> {
+    // Never accept a raw Redis glob from caller input; always anchor to our
+    // namespace and normalize.
+    const safePattern = pattern.startsWith(CACHE_NAMESPACE)
+      ? pattern
+      : `${CACHE_NAMESPACE}${pattern.replace(/[^a-zA-Z0-9:*._-]/g, '_')}`;
+
     try {
       return await this.safeRedisOp(
         async (redis) => {
-          const keys = await redis.keys(pattern);
-          return keys;
-        }, 
+          const results = new Set<string>();
+          let cursor = 0;
+          let iterations = 0;
+          const maxIterations = Math.ceil(MAX_SCAN_RESULTS / 100) + 5;
+
+          do {
+            const reply = await redis.scan(cursor, { MATCH: safePattern, COUNT: 100 });
+            cursor = reply.cursor;
+            for (const key of reply.keys) {
+              // Only return keys under the canonical namespace
+              if (isNamespacedKey(key)) {
+                results.add(key);
+              }
+            }
+            iterations++;
+          } while (cursor !== 0 && iterations < maxIterations && results.size < MAX_SCAN_RESULTS);
+
+          return Array.from(results).slice(0, MAX_SCAN_RESULTS);
+        },
         [],
-        'keys'
+        'scan'
       );
     } catch (error) {
       console.error('Error finding cache keys:', error);
       return [];
     }
-  }
+  },
+
+  /**
+   * List keys for a safe, validated resource type used by the admin UI.
+   * Returns sanitized key tails (must be ≤ a short length) rather than
+   * arbitrary full keys.
+   */
+  async listKeys(scope: string, limit: number = 100): Promise<string[]> {
+    const normalizedScope = scope.replace(/[^a-zA-Z0-9:_-]/g, '');
+    const cappedLimit = Math.max(1, Math.min(limit, MAX_SCAN_RESULTS));
+    const keys = await this.findCacheKeys(`${CACHE_NAMESPACE}${normalizedScope}*`);
+    return keys.slice(0, cappedLimit);
+  },
 };
 
-export default cacheManager; 
+export default cacheManager;
+export { CACHE_SCOPES, buildCacheKey };

@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Lock, LogIn, Bookmark } from 'lucide-react';
-import { useSession, signIn } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
+import { useWatchlistContext } from '@/contexts/WatchlistContext';
 
 const moodToGenreMap = {
   happy: { genres: [35, 10751], keywords: 'feel-good,happy,comedy,uplifting' },
@@ -38,26 +39,10 @@ interface Movie {
 
 export function MoodBasedRecommendations() {
   const { data: session, status } = useSession();
-  const router = useRouter();
+  const { isInWatchlist, toggleWatchlist } = useWatchlistContext();
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
   const [movies, setMovies] = useState<Movie[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [watchlistItems, setWatchlistItems] = useState<Set<number>>(new Set());
-
-  const fetchWatchlistStatus = async () => {
-    try {
-      const response = await fetch('/api/watchlist');
-      if (response.ok) {
-        const data = await response.json();
-        const itemIds = new Set<number>(data
-          .filter((item: { itemId: number }) => typeof item.itemId === 'number')
-          .map((item: { itemId: number }) => Number(item.itemId)));
-        setWatchlistItems(itemIds);
-      }
-    } catch (error) {
-      console.error('Error fetching watchlist status:', error);
-    }
-  };
 
   const handleMoodSelect = async (moodId: string) => {
     setSelectedMood(moodId);
@@ -86,60 +71,15 @@ export function MoodBasedRecommendations() {
     }
   };
 
-  const handleMovieClick = (movieId: number) => {
-    router.push(`/movie/${movieId}`);
-  };
-
-  const handleWatchlistToggle = async (movie: Movie, e: React.MouseEvent) => {
+  const handleWatchlistToggle = (movie: Movie, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!session) {
-      signIn();
-      return;
-    }
-
-    try {
-      // Check if movie is already in watchlist
-      const isInWatchlist = watchlistItems.has(movie.id);
-      
-      if (isInWatchlist) {
-        // If it's in watchlist, remove it
-        const response = await fetch(`/api/watchlist?itemId=${movie.id}&type=movie`, {
-          method: 'DELETE'
-        });
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        // If it's not in watchlist, add it
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: movie.id,
-            type: 'movie',
-            title: movie.title,
-            posterPath: movie.poster_path
-          }),
-        });
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems(prev => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(movie.id);
-        } else {
-          newSet.add(movie.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: movie.id,
+      type: 'movie',
+      title: movie.title,
+      posterPath: movie.poster_path
+    });
   };
-
-  useEffect(() => {
-    fetchWatchlistStatus();
-  }, []);
 
   if (status === 'loading') {
     return (
@@ -185,7 +125,7 @@ export function MoodBasedRecommendations() {
         <div className="flex items-center gap-4 mb-8">
           <div className="w-1 h-8 bg-cyan-500 rounded-full shadow-[0_0_8px_0px] shadow-cyan-500/50" />
           <div>
-            <h2 className="text-2xl font-bold text-white">What's Your Mood?</h2>
+            <h2 className="text-2xl font-bold text-white">What&apos;s Your Mood?</h2>
             <p className="text-gray-400 mt-1">Get recommendations based on how you feel</p>
           </div>
         </div>
@@ -232,13 +172,14 @@ export function MoodBasedRecommendations() {
           <div className="mt-8">
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               {movies.map((movie) => (
-                <div
+                <Link
                   key={movie.id}
-                  onClick={() => handleMovieClick(movie.id)}
+                  href={`/movie/${movie.id}`}
+                  aria-label={`View details for ${movie.title}`}
                   className="group relative bg-gradient-to-br from-gray-800/80 to-gray-900/90
                          rounded-xl overflow-hidden hover:shadow-2xl hover:shadow-cyan-500/10
                          transform hover:-translate-y-1 transition-all duration-300
-                         border border-gray-700/50"
+                         border border-gray-700/50 block focus:outline-none"
                 >
                   <div className="relative aspect-[2/3] overflow-hidden">
                     <Image
@@ -252,14 +193,17 @@ export function MoodBasedRecommendations() {
                   </div>
                   
                   <button
+                    type="button"
                     onClick={(e) => handleWatchlistToggle(movie, e)}
+                    aria-pressed={isInWatchlist(movie.id)}
+                    aria-label={isInWatchlist(movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`}
                     className="absolute top-2 right-2 p-2 rounded-full
                               bg-black/50 backdrop-blur-sm border border-gray-700/50
                               text-white hover:bg-black/70 hover:scale-110
-                              transition-all duration-300 z-10"
+                              transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                   >
                     <Bookmark 
-                      className={`w-4 h-4 ${watchlistItems.has(movie.id) ? 'fill-white' : ''}`} 
+                      className={`w-4 h-4 ${isInWatchlist(movie.id) ? 'fill-white' : ''}`} 
                     />
                   </button>
 
@@ -269,7 +213,7 @@ export function MoodBasedRecommendations() {
                     <h3 className="text-white font-medium text-sm truncate">{movie.title}</h3>
                     <p className="text-cyan-400/80 text-xs mt-2 line-clamp-2">{movie.overview}</p>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           </div>

@@ -3,6 +3,8 @@ import React from "react"
 import { useState, useEffect, useRef } from 'react'
 import Image from 'next/image'
 import { Play, X } from 'lucide-react'
+import { isValidYouTubeVideoId } from '@/lib/ai-security'
+import { SafeYouTubeEmbed } from '@/components/SafeYouTubeEmbed'
 
 interface Trailer {
   id: number
@@ -39,8 +41,8 @@ export default function LatestTrailers() {
         if (!response.ok) throw new Error(`Failed to fetch trailers for ${selectedFilter}`)
         const data = await response.json()
         setTrailers(data.results)
-      } catch (error: any) {
-        setError(error.message)
+      } catch (error: unknown) {
+        setError(error instanceof Error ? error.message : 'Failed to fetch trailers')
         console.error("Error fetching trailers:", error)
       } finally {
         setIsLoading(false)
@@ -99,7 +101,11 @@ export default function LatestTrailers() {
               <div
                 key={trailer.id}
                 className="relative group cursor-pointer"
-                onClick={() => setActiveTrailer(trailer.trailer_key)}
+                onClick={() => {
+                  if (isValidYouTubeVideoId(trailer.trailer_key)) {
+                    setActiveTrailer(trailer.trailer_key)
+                  }
+                }}
               >
                 <div className="relative aspect-video rounded-lg overflow-hidden">
                   <Image
@@ -123,7 +129,7 @@ export default function LatestTrailers() {
       </div>
 
       {/* YouTube Player Modal */}
-      {activeTrailer && (
+      {activeTrailer && isValidYouTubeVideoId(activeTrailer) && (
         <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
           <div ref={playerRef} className="relative w-full max-w-4xl aspect-video">
             <button
@@ -132,12 +138,15 @@ export default function LatestTrailers() {
             >
               <X className="w-8 h-8" />
             </button>
-            <iframe
-              src={`https://www.youtube.com/embed/${activeTrailer}?autoplay=1`}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-              className="w-full h-full rounded-lg"
-            />
+            {activeTrailer && isValidYouTubeVideoId(activeTrailer) && (
+              <SafeYouTubeEmbed
+                videoId={activeTrailer}
+                title="Trailer Preview"
+                className="w-full h-full rounded-lg"
+                iframeClassName="w-full h-full rounded-lg"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              />
+            )}
           </div>
         </div>
       )}

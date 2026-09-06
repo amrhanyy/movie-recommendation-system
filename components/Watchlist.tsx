@@ -13,6 +13,7 @@ type WatchlistItem = {
   title: string
   posterPath: string | null
   addedAt: string
+  createdAt?: string
   voteAverage?: number
   releaseDate?: string
   runtime?: number
@@ -38,25 +39,23 @@ export default function Watchlist({ limit }: WatchlistProps) {
       }
       
       try {
-        // Try to use enhanced details API first for better data
-        let response = await fetch('/api/watchlist/enhanced-details')
-        
+        // Use the cached, enriched details route (Phase 2) so cards show
+        // rating/release/runtime. Single call; no dead endpoint.
+        const response = await fetch('/api/watchlist/details')
+
         if (!response.ok) {
-          // Fall back to basic watchlist API
-          response = await fetch('/api/watchlist')
-          
-          if (!response.ok) {
-            throw new Error('Failed to fetch watchlist')
-          }
+          throw new Error('Failed to fetch watchlist')
         }
-        
+
         const data = await response.json()
-        // Handle both API formats
-        const formattedData = data.map((item: any) => ({
-          ...item,
-          addedAt: item.addedAt || item.createdAt
-        }))
-        
+        // Handle both API formats (createdAt is always present from the model)
+        const formattedData = (Array.isArray(data) ? data : []).map(
+          (item: WatchlistItem) => ({
+            ...item,
+            addedAt: item.addedAt || item.createdAt || ''
+          })
+        )
+
         setItems(formattedData)
       } catch (error) {
         console.error('Error:', error)

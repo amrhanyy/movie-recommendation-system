@@ -1,144 +1,150 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { getUserByEmail } from '@/lib/models/User';
-import connectToMongoDB from '@/lib/mongodb';
-import mongoose from 'mongoose';
+import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/security/auth";
+import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
+import connectToMongoDB from "@/lib/mongodb";
+import mongoose from "mongoose";
+import { z } from "zod";
 
-// Define the settings interface
 interface FeatureSettings {
   features: {
     aiAssistant: boolean;
   };
 }
 
-// Define a feature settings schema
-const FeatureSettingsSchema = new mongoose.Schema({
-  features: {
-    aiAssistant: { type: Boolean, default: true },
-  }
-}, { timestamps: true });
+const FeatureSettingsSchema = new mongoose.Schema(
+  {
+    features: {
+      aiAssistant: { type: Boolean, default: true },
+    },
+  },
+  { timestamps: true }
+);
 
-// Get or create the model (prevent recompile errors)
-const FeatureSettingsModel = mongoose.models.FeatureSettings || 
-  mongoose.model('FeatureSettings', FeatureSettingsSchema);
+const FeatureSettingsModel =
+  mongoose.models.FeatureSettings ||
+  mongoose.model("FeatureSettings", FeatureSettingsSchema);
 
-// Default configuration
 const DEFAULT_CONFIG: FeatureSettings = {
   features: {
     aiAssistant: true,
-  }
+  },
 };
 
-// Helper function to check if user is admin
-async function isAdmin(session: any) {
-  if (!session?.user?.email) return false;
-  
-  try {
-    // Ensure MongoDB connection
-    await connectToMongoDB();
-    
-    // Get user details from MongoDB
-    const user = await getUserByEmail(session.user.email);
-    
-    // Check if user is admin or owner
-    return user?.role === 'admin' || user?.role === 'owner';
-  } catch (error) {
-    console.error('Error checking admin status:', error);
-    return false;
-  }
-}
+const settingsPostSchema = z.object({
+  config: z
+    .object({
+      features: z
+        .object({
+          aiAssistant: z.boolean(),
+        })
+        .strict(),
+    })
+    .strict(),
+});
 
-// Helper to save settings
-async function saveSettings(config: Partial<FeatureSettings>) {
+export async function GET() {
   try {
-    await connectToMongoDB();
-    // Validate and sanitize config
-    const sanitizedConfig: FeatureSettings = {
-      features: {
-        aiAssistant: Boolean(config.features?.aiAssistant),
-      },
-    };
-    
-    // Save to database - create a new document each time
-    const savedSettings = await FeatureSettingsModel.create(sanitizedConfig);
-    return savedSettings;
-  } catch (error) {
-    console.error('Error saving settings:', error);
-    throw new Error('Failed to save settings');
-  }
-}
-
-export async function GET(request: NextRequest) {
-  try {
-    // Check authentication and authorization
-    const session = await getServerSession();
-    const authorized = await isAdmin(session);
-    
-    if (!authorized) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    const authResult = await requireAdmin();
+    if (!authResult.ok) {
+      return authResult.response;
     }
-    
-    // Connect to database
+
     await connectToMongoDB();
-    
-    // Get latest settings
-    const rawSettings = await FeatureSettingsModel.findOne({}).sort({ createdAt: -1 }).lean();
-    
-    // If no settings exist, use default
+
+    const rawSettings = await FeatureSettingsModel.findOne({})
+      .sort({ createdAt: -1 })
+      .lean();
+
     if (!rawSettings) {
-      return NextResponse.json({ 
-        success: true, 
-        config: DEFAULT_CONFIG
+      return NextResponse.json({
+        success: true,
+        config: DEFAULT_CONFIG,
       });
     }
-    
-    // Cast the document to our interface and handle any missing properties
-    const settings: Partial<FeatureSettings> = rawSettings as any;
-    
-    return NextResponse.json({ 
-      success: true, 
+
+    const settings = rawSettings as Partial<FeatureSettings>;
+
+    return NextResponse.json({
+      success: true,
       config: {
         features: {
-          aiAssistant: settings.features?.aiAssistant ?? DEFAULT_CONFIG.features.aiAssistant,
+          aiAssistant:
+            settings.features?.aiAssistant ??
+            DEFAULT_CONFIG.features.aiAssistant,
         },
-      }
+      },
     });
-  } catch (error) {
-    console.error('Settings API error:', error);
-    return NextResponse.json({ error: 'Failed to fetch settings' }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to fetch settings" },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication and authorization
-    const session = await getServerSession();
-    const authorized = await isAdmin(session);
-    
-    if (!authorized) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    const authResult = await requireAdmin();
+    if (!authResult.ok) {
+      return authResult.response;
     }
-    
-    // Get request body
-    const data = await request.json();
-    
-    if (!data.config) {
-      return NextResponse.json({ error: 'No configuration provided' }, { status: 400 });
+
+    let data: unknown;
+    try {
+      data = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON body" },
+        { status: 400 }
+      );
     }
-    
-    // Save new settings
-    const savedConfig = await saveSettings(data.config);
-    const result = savedConfig.toObject();
-    
-    return NextResponse.json({ 
-      success: true, 
-      message: 'Settings saved successfully',
+
+    const parseResult = settingsPostSchema.safeParse(data);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: "Invalid configuration", details: parseResult.error.issues },
+        { status: 400 }
+      );
+    }
+
+    // Rate limit admin mutations (F-011)
+    const rateLimitResponse = await applyRateLimitUser(
+      request,
+      authResult.user.email,
+      RATE_LIMITS.adminMutation
+    );
+    if (rateLimitResponse) {
+      return rateLimitResponse;
+    }
+
+    await connectToMongoDB();
+
+    // Upsert a single document instead of creating a new one each save
+    const sanitizedConfig: FeatureSettings = {
+      features: {
+        aiAssistant: Boolean(parseResult.data.config.features.aiAssistant),
+      },
+    };
+
+    const savedSettings = await FeatureSettingsModel.findOneAndUpdate(
+      {},
+      { $set: sanitizedConfig },
+      { new: true, upsert: true }
+    ).lean();
+
+    const result = savedSettings as unknown as FeatureSettings;
+
+    return NextResponse.json({
+      success: true,
+      message: "Settings saved successfully",
       config: {
         features: result.features,
-      }
+      },
     });
-  } catch (error) {
-    console.error('Settings API error:', error);
-    return NextResponse.json({ error: 'Failed to save settings' }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to save settings" },
+      { status: 500 }
+    );
   }
-} 
+}

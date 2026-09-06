@@ -17,7 +17,6 @@ export interface TMDBMovieDetails {
   vote_average?: number;
   overview?: string;
   genres?: Array<{ id: number; name: string }>;
-  [key: string]: any;
 }
 
 export interface TMDBTVDetails {
@@ -30,7 +29,6 @@ export interface TMDBTVDetails {
   vote_average?: number;
   overview?: string;
   genres?: Array<{ id: number; name: string }>;
-  [key: string]: any;
 }
 
 export type TMDBDetails = TMDBMovieDetails | TMDBTVDetails;

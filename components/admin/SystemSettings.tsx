@@ -109,7 +109,7 @@ export function SystemSettings() {
     }
   };
   
-  const handleChange = (section: keyof SystemConfig, key: string, value: any) => {
+  const handleChange = (section: keyof SystemConfig, key: string, value: boolean | string | number) => {
     setConfig(prev => ({
       ...prev,
       [section]: {

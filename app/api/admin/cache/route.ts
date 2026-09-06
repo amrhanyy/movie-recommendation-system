@@ -1,109 +1,261 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import cacheManager from '../../../../lib/cacheManager';
-import mongoose from 'mongoose';
-import { getUserByEmail } from '../../../../lib/models/User';
+import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/security/auth";
+import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
+import cacheManager from "@/lib/cacheManager";
+import { CACHE_NAMESPACE } from "@/lib/cache-namespace";
+import { z } from "zod";
 
-async function isAdmin(session: any) {
-  if (!session?.user?.email) return false;
-  
-  // Ensure MongoDB connection
-  if (mongoose.connection.readyState !== 1) {
-    await mongoose.connect(process.env.MONGODB_URI!);
+/**
+ * Cache administration API.
+ *
+ * Security (F-008 / F-009 / F-052):
+ * - requireAdmin() at handler level; never client-role-controlled.
+ * - GET is read-only (stats only); destructive actions use POST/DELETE.
+ * - Clearing is prefix-scoped; FLUSHDB is never called.
+ * - Key listing uses bounded SCAN only; redis.keys() is never called.
+ * - Same-origin check on cookie-authenticated mutations.
+ * - Strict Zod bodies; raw patterns are not accepted.
+ */
+
+const SAME_ORIGIN_ERROR = "Invalid origin";
+
+/**
+ * Same-origin policy for cookie-authenticated cache mutations.
+ * Origin is required for browser-initiated requests. Server-side calls
+ * (e.g. monitoring, CLI tools) may omit Origin; treat absence as allowed
+ * only when the request is not browser-initiated (no Origin header at all).
+ */
+function isSameOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return true; // non-browser request (CLI, server-to-server)
+  const host = request.headers.get("host");
+  if (!host) return false;
+  try {
+    const originUrl = new URL(origin);
+    return originUrl.host === host;
+  } catch {
+    return false;
   }
-  
-  // Get user details from MongoDB
-  const user = await getUserByEmail(session.user.email);
-  
-  // Check if user is admin or owner
-  return user?.role === 'admin' || user?.role === 'owner';
 }
+
+const noStoreHeaders = {
+  "Cache-Control": "no-store",
+};
 
 export async function GET(request: NextRequest) {
   try {
-    // Check authentication and authorization
-    const session = await getServerSession();
-    const authorized = await isAdmin(session);
-    
-    if (!authorized) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    const authResult = await requireAdmin();
+    if (!authResult.ok) {
+      return authResult.response;
     }
-    
-    // Get stats about Redis cache
-    const stats = await cacheManager.getCacheStats();
-    
-    // Get action from query params
+
     const { searchParams } = new URL(request.url);
-    const action = searchParams.get('action') || 'stats';
-    const pattern = searchParams.get('pattern') || '*';
-    
-    if (action === 'stats') {
-      return NextResponse.json({ success: true, stats });
+    const action = searchParams.get("action") || "stats";
+
+    if (action === "stats") {
+      const stats = await cacheManager.getCacheStats();
+      return NextResponse.json(
+        { success: true, stats },
+        { headers: noStoreHeaders }
+      );
     }
-    
-    if (action === 'list') {
-      // List all keys matching the pattern
-      const keys = await cacheManager.findCacheKeys(pattern);
-      return NextResponse.json({ 
-        success: true, 
-        keys,
-        count: keys.length
+
+    // Only bounded, sanitized metadata listing is permitted via GET;
+    // raw patterns are rejected.
+    if (action === "list") {
+      const scopeParam = searchParams.get("scope") || "public:tmdb";
+      // Validate scope against an internal allowlist; never accept arbitrary
+      // patterns or keys from the client.
+      const allowedScopes = [
+        "public:tmdb",
+        "user:recommendations",
+        "security:rate-limit",
+        "admin:cache-metadata",
+        "public:ai-similar",
+      ];
+      const scope = scopeParam.replace(/[^a-zA-Z0-9:_-]/g, "");
+      if (!allowedScopes.includes(scope)) {
+        return NextResponse.json(
+          { error: "Invalid scope" },
+          { status: 400, headers: noStoreHeaders }
+        );
+      }
+      const limitParam = searchParams.get("limit");
+      const limit = limitParam
+        ? Math.max(1, Math.min(parseInt(limitParam, 10) || 100, 200))
+        : 100;
+      const keys = await cacheManager.listKeys(scope, limit);
+      // Return sanitized head metadata only (no raw key names)
+      const sanitized = keys.map((k) => {
+        const tail = k.startsWith(CACHE_NAMESPACE)
+          ? k.slice(CACHE_NAMESPACE.length)
+          : k;
+        return tail.length > 78 ? tail.slice(0, 75) + "..." : tail;
       });
+      return NextResponse.json(
+        { success: true, count: sanitized.length, keys: sanitized },
+        { headers: noStoreHeaders }
+      );
     }
-    
-    if (action === 'clear') {
-      // Clear the entire cache (admin only)
-      await cacheManager.clearAllCache();
-      return NextResponse.json({ success: true, message: 'Cache cleared' });
-    }
-    
-    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
-  } catch (error) {
-    console.error('Cache management error:', error);
-    return NextResponse.json({ error: 'Failed to manage cache' }, { status: 500 });
+
+    // GET can only retrieve stats/metadata, never clear or mutate (F-008)
+    return NextResponse.json(
+      { error: "Use POST or DELETE for cache operations" },
+      { status: 405, headers: noStoreHeaders }
+    );
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to manage cache" },
+      { status: 500, headers: noStoreHeaders }
+    );
   }
 }
 
+const invalidateSchema = z.object({
+  action: z.literal("invalidate"),
+  id: z.union([z.string().min(1).max(50), z.number()]),
+  type: z.enum(["movie", "tv", "home"]),
+}).strict();
+
+const clearSchema = z.object({
+  action: z.literal("clear"),
+}).strict();
+
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication and authorization
-    const session = await getServerSession();
-    const authorized = await isAdmin(session);
-    
-    if (!authorized) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    const authResult = await requireAdmin();
+    if (!authResult.ok) {
+      return authResult.response;
     }
-    
-    // Get request body
-    const body = await request.json();
-    const { action, id, type } = body;
-    
-    if (action === 'invalidate') {
-      if (!id || !type) {
-        return NextResponse.json({ error: 'ID and type are required' }, { status: 400 });
+
+    if (!isSameOrigin(request)) {
+      return NextResponse.json(
+        { error: SAME_ORIGIN_ERROR },
+        { status: 403, headers: noStoreHeaders }
+      );
+    }
+
+    // Rate limit cache administration (F-011)
+    const rateLimitResponse = await applyRateLimitUser(
+      request,
+      authResult.user.email,
+      RATE_LIMITS.cacheAdmin
+    );
+    if (rateLimitResponse) {
+      return rateLimitResponse;
+    }
+
+    let data: unknown;
+    try {
+      data = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON body" },
+        { status: 400, headers: noStoreHeaders }
+      );
+    }
+
+    // Try invalidate schema first
+    const invalidateResult = invalidateSchema.safeParse(data);
+    if (invalidateResult.success) {
+      const { id, type } = invalidateResult.data;
+
+      if (type === "movie") {
+        await cacheManager.invalidateMovieCache(String(id));
+        return NextResponse.json(
+          { success: true, message: `Cache for movie ${id} invalidated` },
+          { headers: noStoreHeaders }
+        );
       }
-      
-      if (type === 'movie') {
-        await cacheManager.invalidateMovieCache(id);
-        return NextResponse.json({ success: true, message: `Cache for movie ${id} invalidated` });
-      } 
-      
-      if (type === 'tv') {
-        await cacheManager.invalidateTVCache(id);
-        return NextResponse.json({ success: true, message: `Cache for TV show ${id} invalidated` });
+
+      if (type === "tv") {
+        await cacheManager.invalidateTVCache(String(id));
+        return NextResponse.json(
+          { success: true, message: `Cache for TV show ${id} invalidated` },
+          { headers: noStoreHeaders }
+        );
       }
-      
-      if (type === 'home') {
+
+      if (type === "home") {
         await cacheManager.invalidateHomeCache();
-        return NextResponse.json({ success: true, message: 'Home page cache invalidated' });
+        return NextResponse.json(
+          { success: true, message: "Home page cache invalidated" },
+          { headers: noStoreHeaders }
+        );
       }
-      
-      return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
+
+      return NextResponse.json(
+        { error: "Invalid type" },
+        { status: 400, headers: noStoreHeaders }
+      );
     }
-    
-    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
-  } catch (error) {
-    console.error('Cache management error:', error);
-    return NextResponse.json({ error: 'Failed to manage cache' }, { status: 500 });
+
+    // Try clear schema
+    const clearResult = clearSchema.safeParse(data);
+    if (clearResult.success) {
+      const result = await cacheManager.clearAllCache();
+      return NextResponse.json(
+        {
+          success: true,
+          message: "Application cache cleared",
+          deleted: result.deleted,
+          remaining: result.remaining,
+        },
+        { headers: noStoreHeaders }
+      );
+    }
+
+    return NextResponse.json(
+      { error: "Invalid action" },
+      { status: 400, headers: noStoreHeaders }
+    );
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to manage cache" },
+      { status: 500, headers: noStoreHeaders }
+    );
   }
-} 
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const authResult = await requireAdmin();
+    if (!authResult.ok) {
+      return authResult.response;
+    }
+
+    if (!isSameOrigin(request)) {
+      return NextResponse.json(
+        { error: SAME_ORIGIN_ERROR },
+        { status: 403, headers: noStoreHeaders }
+      );
+    }
+
+    // Rate limit cache administration (F-011)
+    const rateLimitResponse = await applyRateLimitUser(
+      request,
+      authResult.user.email,
+      RATE_LIMITS.cacheAdmin
+    );
+    if (rateLimitResponse) {
+      return rateLimitResponse;
+    }
+
+    // Prefix-scoped clear; never FLUSHDB/FLUSHALL (F-009)
+    const result = await cacheManager.clearAllCache();
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Application cache cleared",
+        deleted: result.deleted,
+        remaining: result.remaining,
+      },
+      { headers: noStoreHeaders }
+    );
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to clear cache" },
+      { status: 500, headers: noStoreHeaders }
+    );
+  }
+}

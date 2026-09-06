@@ -72,7 +72,10 @@ export function CacheManagement() {
   const fetchCacheKeys = async () => {
     try {
       setLoadingKeys(true)
-      const response = await fetch(`/api/admin/cache?action=list&pattern=${encodeURIComponent(keyPattern)}`)
+      // Scope-based list; the server validates the scope against an internal
+      // allowlist — raw user patterns are never accepted (F-052).
+      const scope = keyPattern === '*' ? 'public:tmdb' : keyPattern.replace(/[^a-zA-Z0-9:_-]/g, '')
+      const response = await fetch(`/api/admin/cache?action=list&scope=${encodeURIComponent(scope)}`)
       
       if (!response.ok) {
         throw new Error('Failed to fetch cache keys')
@@ -92,8 +95,8 @@ export function CacheManagement() {
   const clearCache = async () => {
     try {
       setClearingCache(true)
-      const response = await fetch('/api/admin/cache?action=clear', {
-        method: 'GET'
+      const response = await fetch('/api/admin/cache', {
+        method: 'DELETE'
       })
       
       if (!response.ok) {
@@ -354,7 +357,7 @@ export function CacheManagement() {
             ) : (
               <div className="flex flex-col items-center gap-2">
                 <Database className="h-8 w-8 text-gray-500 opacity-50" />
-                <p>No cache keys found matching pattern: <span className="text-gray-300 font-mono">{keyPattern}</span></p>
+                <p>No cache keys found matching scope: <span className="text-gray-300 font-mono">{keyPattern}</span></p>
               </div>
             )}
           </div>

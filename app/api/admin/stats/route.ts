@@ -1,118 +1,99 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import mongoose from 'mongoose';
-import { getUserByEmail } from '@/lib/models/User';
-import connectToMongoDB from '@/lib/mongodb';
-import { User } from '@/lib/models/User';
-import cacheManager from '@/lib/cacheManager';
+import { NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/security/auth";
+import { User } from "@/lib/models/User";
+import connectToMongoDB from "@/lib/mongodb";
+import cacheManager from "@/lib/cacheManager";
 
-async function isAdmin(session: any) {
-  if (!session?.user?.email) return false;
-  
-  // Ensure MongoDB connection
-  await connectToMongoDB();
-  
-  // Get user details from MongoDB
-  const user = await getUserByEmail(session.user.email);
-  
-  // Check if user is admin or owner
-  return user?.role === 'admin' || user?.role === 'owner';
-}
-
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    // Check authentication and authorization
-    const session = await getServerSession();
-    const authorized = await isAdmin(session);
-    
-    if (!authorized) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    const authResult = await requireAdmin();
+    if (!authResult.ok) {
+      return authResult.response;
     }
-    
+
     await connectToMongoDB();
-    
-    // Get total users count
+
+    // Total users count — truthful metric
     const totalUsers = await User.countDocuments({});
-    
-    // Get cache statistics
+
+    // Cache statistics — truthful metric from cacheManager
     let cacheKeys = 0;
     try {
       const cacheStats = await cacheManager.getCacheStats();
-      cacheKeys = cacheStats.totalKeys || 0;
-    } catch (error) {
-      console.error('Error fetching cache stats:', error);
+      cacheKeys = typeof cacheStats.totalKeys === 'number' ? cacheStats.totalKeys : 0;
+    } catch {
+      // cacheStats unavailable
     }
-    
-    // Get API requests in the last 24 hours
-    // This is a placeholder. In a real app, you would have a database table/collection
-    // that logs API requests with timestamps
-    const apiRequests24h = await getApiRequests24h();
-    
-    // Get user growth data
+
+    // API requests: unavailable (no request logging collection exists)
+    // Return null instead of mock/random data (F-046 fix)
+    const apiRequests24h = null;
+
+    // User growth: real aggregation from the database
     const growthData = await getUserGrowthData();
-    
+
     return NextResponse.json({
       totalUsers,
       cacheKeys,
       apiRequests24h,
-      growthData
+      growthData,
     });
-  } catch (error) {
-    console.error('Error fetching admin stats:', error);
-    return NextResponse.json({ error: 'Failed to fetch stats' }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to fetch stats" },
+      { status: 500 }
+    );
   }
 }
 
-// Placeholder function to get API requests in the last 24 hours
-// In a real application, you would implement this with actual database queries
-async function getApiRequests24h() {
-  // This is just a placeholder for demonstration
-  // In a real app, you would have a database collection tracking API requests
-  // and would query it with a date range filter
-  
-  try {
-    // Example: if you had an ApiLog collection
-    // return await ApiLog.countDocuments({
-    //   timestamp: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-    // });
-    
-    // For now, just return a random number as a placeholder
-    return Math.floor(Math.random() * 1000) + 500;
-  } catch (error) {
-    console.error('Error calculating API requests:', error);
-    return 0;
-  }
-}
-
-// Placeholder function to get user growth data
-// In a real application, you would aggregate user signups by month from your database
+/**
+ * Real user growth aggregation from MongoDB.
+ * Groups user signups by month using the created_at field.
+ */
 async function getUserGrowthData() {
-  // In a real app, you would aggregate user registrations by month
-  // For example with MongoDB:
-  // const result = await User.aggregate([
-  //   {
-  //     $group: {
-  //       _id: { 
-  //         year: { $year: "$createdAt" },
-  //         month: { $month: "$createdAt" }
-  //       },
-  //       count: { $sum: 1 }
-  //     }
-  //   },
-  //   { $sort: { "_id.year": 1, "_id.month": 1 } },
-  //   { $limit: 7 }
-  // ]);
-  
-  // For now, return mock data
-  const mockData = [
-    { month: 'Jan', users: 1200, trend: 5 },
-    { month: 'Feb', users: 1500, trend: 25 },
-    { month: 'Mar', users: 1750, trend: 16.7 },
-    { month: 'Apr', users: 2100, trend: 20 },
-    { month: 'May', users: 2400, trend: 14.3 },
-    { month: 'Jun', users: 3100, trend: 29.6 },
-    { month: 'Jul', users: 3500, trend: 12.9 },
-  ];
-  
-  return mockData;
-} 
+  try {
+    const result = await User.aggregate([
+      {
+        $group: {
+          _id: {
+            year: { $year: "$created_at" },
+            month: { $month: "$created_at" },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+      { $limit: 12 },
+    ]);
+
+    const monthNames = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
+
+    return result.map((entry, index) => {
+      const prevCount = index > 0 ? result[index - 1].count : 0;
+      const trend =
+        prevCount > 0
+          ? Math.round(((entry.count - prevCount) / prevCount) * 1000) / 10
+          : 0;
+      return {
+        month: `${monthNames[entry._id.month - 1]} ${entry._id.year}`,
+        users: entry.count,
+        trend,
+      };
+    });
+  } catch {
+    return [];
+  }
+}

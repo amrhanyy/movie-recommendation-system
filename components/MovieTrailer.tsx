@@ -1,74 +1,46 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React from 'react';
+import { isValidYouTubeVideoId } from '@/lib/ai-security';
+import { SafeYouTubeEmbed } from '@/components/SafeYouTubeEmbed';
 
 interface MovieTrailerProps {
   movieId: string;
   initialTrailerKey?: string;
 }
 
-export const MovieTrailer: React.FC<MovieTrailerProps> = ({ movieId, initialTrailerKey }) => {
-  const [trailerKey, setTrailerKey] = useState<string | null>(initialTrailerKey || null);
-  const [isLoading, setIsLoading] = useState(!initialTrailerKey);
-  const [error, setError] = useState<string | null>(null);
+/**
+ * Renders a movie trailer from `initialTrailerKey` (provided by the movie
+ * details page via /api/movie/[id], which already resolves trailer info).
+ *
+ * Phase 3: the previous `fetch('/api/movie/[id]/videos')` fallback targeted a
+ * route that does not exist (404). It has been removed — when no valid trailer
+ * key is available we render the static "No trailer available" fallback with
+ * no extraneous network call.
+ */
+export const MovieTrailer: React.FC<MovieTrailerProps> = ({
+  initialTrailerKey,
+}) => {
+  const trailerKey = isValidYouTubeVideoId(initialTrailerKey)
+    ? (initialTrailerKey as string)
+    : null;
 
-  useEffect(() => {
-    if (initialTrailerKey) return; // Use initial trailer key if provided
-    const fetchTrailer = async () => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const response = await fetch(`/api/movie/${movieId}/videos`);
-        if (response.status === 404) {
-          setError('Trailer not available.');
-          return;
-        }
-        if (!response.ok) {
-          throw new Error(`Failed to fetch trailer: ${response.status}`);
-        }
-        const data = await response.json();
-        const trailer = data.results?.find((video: any) => video.type === 'Trailer' && video.site === 'YouTube');
-
-        if (trailer) {
-          setTrailerKey(trailer.key);
-        } else {
-          setError('No YouTube trailer found for this movie.');
-        }
-      } catch (err: any) {
-        setError(`Failed to fetch trailer: ${err.message}`);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    fetchTrailer();
-  }, [movieId, initialTrailerKey]);
-
-  if (isLoading) {
-    return <div className="text-center text-gray-400">Loading trailer...</div>;
-  }
-
-  if (error) {
+  if (!trailerKey) {
     return (
-      <div className="text-center text-gray-400">
-        {error === 'Trailer not available.' ? 'No trailer available.' : `Error: ${error}`}
+      <div className="flex items-center justify-center rounded-lg border border-gray-700/50 bg-gray-800/30 py-10 text-center text-gray-400">
+        No trailer available.
       </div>
     );
   }
 
-  if (!trailerKey) {
-    return <div className="text-center text-gray-400">No trailer available.</div>;
-  }
-
-  return (
-    <div className="relative w-full aspect-video">
-      <iframe
-        className="absolute inset-0 w-full h-full rounded-lg"
-        src={`https://www.youtube.com/embed/${trailerKey}`}
-        title="Movie Trailer"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-        allowFullScreen
-      />
-    </div>
+  const embed = (
+    <SafeYouTubeEmbed
+      videoId={trailerKey}
+      title="Movie Trailer"
+      className="relative w-full aspect-video"
+      iframeClassName="absolute inset-0 w-full h-full rounded-lg"
+    />
   );
+
+  return embed ?? <div className="text-center text-gray-400">No trailer available.</div>;
 };

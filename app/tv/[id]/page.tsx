@@ -7,11 +7,12 @@ import Image from "next/image"
 import { Calendar, Star, TrendingUp, ExternalLink, ChevronLeft, ChevronRight, Bookmark } from 'lucide-react'
 import PageWrapper from '../../../components/PageWrapper'  // Standard import
 import TVShowTrailer from '../../../components/TVShowTrailer'
-import { useWatchlist } from '../../../hooks/useWatchlist'
 import { HistoryTracker } from '../../../components/HistoryTracker'
 import { FavoriteButton } from '../../../components/FavoriteButton'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
-import { useSession, signIn } from 'next-auth/react'
+import { SafeExternalLink } from '@/components/SafeExternalLink'
+import { useWatchlistContext } from '@/contexts/WatchlistContext'
+import Link from 'next/link'
 
 interface TVShow {
   id: number
@@ -74,7 +75,7 @@ interface TVShow {
   }
 }
 
-export default function TVShowPage({ params }: { params: any }) {
+export default function TVShowPage({ params }: { params: Promise<{ id: string }> }) {
   // Unwrap params with React.use()
   const unwrappedParams = use(params) as { id: string };
   const tvShowId = unwrappedParams.id;
@@ -87,126 +88,26 @@ export default function TVShowPage({ params }: { params: any }) {
   const [recommendations, setRecommendations] = useState<TVShow[]>([])
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const similarScrollRef = useRef<HTMLDivElement>(null)
-  const { data: session, status } = useSession()
-  const [watchlistItems, setWatchlistItems] = useState<Set<number>>(new Set())
+  const { isInWatchlist, toggleWatchlist } = useWatchlistContext()
 
-  const handleWatchlistToggle = async (show: any, e: React.MouseEvent) => {
+  const handleWatchlistToggle = (show: TVShow, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!session) {
-      signIn();
-      return;
-    }
-
-    try {
-      const isInWatchlist = watchlistItems.has(show.id);
-      
-      if (isInWatchlist) {
-        // If it's in watchlist, remove it
-        const response = await fetch(`/api/watchlist?itemId=${show.id}&type=tv`, {
-          method: 'DELETE',
-          credentials: 'same-origin'
-        });
-        
-        if (response.status === 401) {
-          signIn();
-          return;
-        }
-        
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        // If it's not in watchlist, add it
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: show.id,
-            type: 'tv',
-            title: show.name,
-            posterPath: show.poster_path
-          }),
-          credentials: 'same-origin'
-        });
-        
-        if (response.status === 401) {
-          signIn();
-          return;
-        }
-        
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems((prev) => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(show.id);
-        } else {
-          newSet.add(show.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error updating watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: show.id,
+      type: 'tv',
+      title: show.name,
+      posterPath: show.poster_path
+    });
   };
 
-  const handleSimilarWatchlistToggle = async (show: any, e: React.MouseEvent) => {
+  const handleSimilarWatchlistToggle = (show: TVShow, e: React.MouseEvent) => {
     e.stopPropagation();
-    
-    if (!session) {
-      signIn();
-      return;
-    }
-    
-    try {
-      const isInWatchlist = watchlistItems.has(show.id);
-      
-      if (isInWatchlist) {
-        const response = await fetch(`/api/watchlist?itemId=${show.id}&type=tv`, {
-          method: 'DELETE',
-          credentials: 'same-origin'
-        });
-        
-        if (response.status === 401) {
-          signIn();
-          return;
-        }
-        
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: show.id,
-            type: 'tv',
-            title: show.name,
-            posterPath: show.poster_path
-          }),
-          credentials: 'same-origin'
-        });
-        
-        if (response.status === 401) {
-          signIn();
-          return;
-        }
-        
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems(prev => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(show.id);
-        } else {
-          newSet.add(show.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: show.id,
+      type: 'tv',
+      title: show.name,
+      posterPath: show.poster_path
+    });
   };
 
   const scroll = (direction: 'left' | 'right', ref: React.RefObject<HTMLDivElement>) => {
@@ -255,44 +156,6 @@ export default function TVShowPage({ params }: { params: any }) {
 
     fetchShow()
   }, [tvShowId])
-
-  useEffect(() => {
-    async function fetchWatchlistStatus() {
-      if (status === 'loading') return;
-      
-      if (!session) {
-        setWatchlistItems(new Set());
-        return;
-      }
-      
-      try {
-        const response = await fetch('/api/watchlist', {
-          credentials: 'same-origin'
-        });
-        
-        if (response.status === 401) {
-          console.log('User not authenticated for watchlist');
-          return;
-        }
-        
-        if (response.ok) {
-          const data = await response.json();
-          const itemIds = new Set(
-            data
-              .filter((item: { itemId: number; type: string }) => 
-                item.type === 'tv' && typeof item.itemId === 'number'
-              )
-              .map((item: { itemId: number }) => item.itemId)
-          ) as Set<number>;
-          setWatchlistItems(itemIds);
-        }
-      } catch (error) {
-        console.error('Error fetching watchlist status:', error);
-      }
-    }
-
-    fetchWatchlistStatus();
-  }, [session, status]);
 
   if (isLoading) {
     return <LoadingSpinner message="Loading TV show details..." />
@@ -343,14 +206,17 @@ export default function TVShowPage({ params }: { params: any }) {
                   />
                   {/* Save Button */}
                   <button
+                    type="button"
                     onClick={(e) => handleWatchlistToggle(show, e)}
+                    aria-pressed={isInWatchlist(show.id)}
+                    aria-label={isInWatchlist(show.id) ? `Remove ${show.name} from watchlist` : `Add ${show.name} to watchlist`}
                     className="absolute top-4 right-4 p-2 rounded-full
                             bg-black/50 backdrop-blur-sm border border-gray-700/50
                             text-white hover:bg-black/70 hover:scale-110
-                            transition-all duration-300 z-10"
+                            transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                   >
-                    <Bookmark 
-                      className={`w-5 h-5 ${watchlistItems.has(show.id) ? 'fill-white' : ''}`}
+                    <Bookmark
+                      className={`w-5 h-5 ${isInWatchlist(show.id) ? 'fill-white' : ''}`}
                     />
                   </button>
                   <FavoriteButton
@@ -361,17 +227,15 @@ export default function TVShowPage({ params }: { params: any }) {
                   />
                 </div>
                 {show.homepage && (
-                  <a 
+                  <SafeExternalLink
                     href={show.homepage}
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-xl
                             bg-gray-800/40 backdrop-blur-sm border border-gray-700/50
                             text-gray-300 hover:text-white hover:border-gray-600 transition-all duration-300"
                   >
                     <ExternalLink className="w-4 h-4" />
                     <span>Official Website</span>
-                  </a>
+                  </SafeExternalLink>
                 )}
               </div>
 
@@ -450,7 +314,7 @@ export default function TVShowPage({ params }: { params: any }) {
       <div className="lg:col-span-3 space-y-8">
         {/* Tagline */}
         {show.tagline && (
-          <p className="text-2xl text-gray-400 italic text-center mb-12">"{show.tagline}"</p>
+          <p className="text-2xl text-gray-400 italic text-center mb-12">&quot;{show.tagline}&quot;</p>
         )}
 
         {/* Content Sections Grid */}
@@ -582,12 +446,14 @@ export default function TVShowPage({ params }: { params: any }) {
                             transform group-hover:scale-105 transition-all duration-300 
                             border-2 border-gray-700/50 hover:border-cyan-500/50">
                   <Image
-                    src={person.profile_path 
+                    src={person.profile_path
                       ? `https://image.tmdb.org/t/p/w185${person.profile_path}`
-                      : '/placeholder-avatar.png'
+                      : '/images/placeholder-avatar.png'
                     }
                     alt={person.name}
                     fill
+                    sizes="(max-width: 640px) 25vw, (max-width: 1024px) 15vw, 10vw"
+                    loading="lazy"
                     className="object-cover"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -614,55 +480,65 @@ export default function TVShowPage({ params }: { params: any }) {
           </div>
 
           <div className="relative group">
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('left', similarScrollRef)}
-              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll left"
+              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronLeft className="w-8 h-8" />
             </button>
 
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('right', similarScrollRef)}
-              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll right"
+              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronRight className="w-8 h-8" />
             </button>
 
-            <div 
+            <div
               ref={similarScrollRef}
               className="flex space-x-6 overflow-x-auto scrollbar-hide scroll-smooth pb-4"
             >
               {similarShows.map((show) => (
-                <div
+                <Link
                   key={show.id}
-                  className="flex-none w-[180px] group/item cursor-pointer"
-                  onClick={() => router.push(`/tv/${show.id}`)}
+                  href={`/tv/${show.id}`}
+                  aria-label={`View details for ${show.name}`}
+                  className="flex-none w-[180px] group/item block focus:outline-none"
                 >
                   <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                               transform group-hover/item:scale-105 transition-all duration-300 
                               border border-gray-700/50">
                     <Image
-                      src={show.poster_path 
+                      src={show.poster_path
                         ? `https://image.tmdb.org/t/p/w342${show.poster_path}`
-                        : '/placeholder-poster.png'
+                        : '/images/placeholder-poster.png'
                       }
                       alt={show.name}
                       fill
+                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 15vw"
+                      loading="lazy"
                       className="object-cover"
                     />
                     <button
+                      type="button"
                       onClick={(e) => handleSimilarWatchlistToggle(show, e)}
+                      aria-pressed={isInWatchlist(show.id)}
+                      aria-label={isInWatchlist(show.id) ? `Remove ${show.name} from watchlist` : `Add ${show.name} to watchlist`}
                       className="absolute top-2 right-2 p-2 rounded-full
                                 bg-black/50 backdrop-blur-sm border border-gray-700/50
                                 text-white hover:bg-black/70 hover:scale-110
-                                transition-all duration-300 z-10"
+                                transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                     >
                       <Bookmark
-                        className={`w-4 h-4 ${watchlistItems.has(show.id) ? 'fill-white' : ''}`}
+                        className={`w-4 h-4 ${isInWatchlist(show.id) ? 'fill-white' : ''}`}
                       />
                     </button>
                     <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -680,7 +556,7 @@ export default function TVShowPage({ params }: { params: any }) {
                   <p className="text-gray-400 text-xs">
                     {show.first_air_date ? new Date(show.first_air_date).getFullYear() : 'N/A'}
                   </p>
-                </div>
+                </Link>
               ))}
             </div>
           </div>
@@ -696,55 +572,65 @@ export default function TVShowPage({ params }: { params: any }) {
           </div>
 
           <div className="relative group">
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('left', scrollContainerRef)}
-              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll left"
+              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronLeft className="w-8 h-8" />
             </button>
 
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('right', scrollContainerRef)}
-              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll right"
+              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronRight className="w-8 h-8" />
             </button>
 
-            <div 
+            <div
               ref={scrollContainerRef}
               className="flex space-x-6 overflow-x-auto scrollbar-hide scroll-smooth pb-4"
             >
               {recommendations.map((show) => (
-                <div
+                <Link
                   key={show.id}
-                  className="flex-none w-[180px] group/item cursor-pointer"
-                  onClick={() => router.push(`/tv/${show.id}`)}
+                  href={`/tv/${show.id}`}
+                  aria-label={`View details for ${show.name}`}
+                  className="flex-none w-[180px] group/item block focus:outline-none"
                 >
                   <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                               transform group-hover/item:scale-105 transition-all duration-300 
                               border border-gray-700/50">
                     <Image
-                      src={show.poster_path 
+                      src={show.poster_path
                         ? `https://image.tmdb.org/t/p/w342${show.poster_path}`
-                        : '/placeholder-poster.png'
+                        : '/images/placeholder-poster.png'
                       }
                       alt={show.name}
                       fill
+                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 15vw"
+                      loading="lazy"
                       className="object-cover"
                     />
                     <button
+                      type="button"
                       onClick={(e) => handleSimilarWatchlistToggle(show, e)}
+                      aria-pressed={isInWatchlist(show.id)}
+                      aria-label={isInWatchlist(show.id) ? `Remove ${show.name} from watchlist` : `Add ${show.name} to watchlist`}
                       className="absolute top-2 right-2 p-2 rounded-full
                                 bg-black/50 backdrop-blur-sm border border-gray-700/50
                                 text-white hover:bg-black/70 hover:scale-110
-                                transition-all duration-300 z-10"
+                                transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                     >
                       <Bookmark
-                        className={`w-4 h-4 ${watchlistItems.has(show.id) ? 'fill-white' : ''}`}
+                        className={`w-4 h-4 ${isInWatchlist(show.id) ? 'fill-white' : ''}`}
                       />
                     </button>
                     <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -762,7 +648,7 @@ export default function TVShowPage({ params }: { params: any }) {
                   <p className="text-gray-400 text-xs">
                     {show.first_air_date ? new Date(show.first_air_date).getFullYear() : 'N/A'}
                   </p>
-                </div>
+                </Link>
               ))}
             </div>
           </div>

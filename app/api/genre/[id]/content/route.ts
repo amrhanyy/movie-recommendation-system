@@ -1,4 +1,6 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
+import { tmdbIdSchema, mediaTypeStrictSchema } from '@/lib/security/schemas';
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
@@ -27,28 +29,49 @@ const genreMapping: { [key: string]: { movie: string; tv: string } } = {
 }
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
+  // Rate limit public TMDB proxy (M-03)
+  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxy);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
+
   try {
     const { id } = await context.params;
     const { searchParams } = new URL(request.url)
     const page = searchParams.get('page') || '1'
     const type = searchParams.get('type') || 'movie'
 
+    // M-03: validate id (numeric genre id) and type (movie|tv only)
+    const idParse = tmdbIdSchema.safeParse(Number(id));
+    if (!idParse.success || !/^\d{1,8}$/.test(id)) {
+      return NextResponse.json({ error: 'Invalid genre ID' }, { status: 400 });
+    }
+    const typeParse = mediaTypeStrictSchema.safeParse(type);
+    if (!typeParse.success) {
+      return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
+    }
+    // Page must be a positive integer to avoid upstream query tampering
+    const pageParse = /^\d{1,4}$/.test(page);
+    if (!pageParse) {
+      return NextResponse.json({ error: 'Invalid page' }, { status: 400 });
+    }
+
     if (!TMDB_API_KEY) {
-      throw new Error('TMDB API key is not configured');
+      return NextResponse.json({ error: 'Upstream service unavailable' }, { status: 503 });
     }
 
     // Get the correct genre ID for the content type
     let genreId = id;
     if (genreMapping[id]) {
-      genreId = type === 'tv' ? genreMapping[id].tv : genreMapping[id].movie;
+      genreId = typeParse.data === 'tv' ? genreMapping[id].tv : genreMapping[id].movie;
     }
 
     // Fetch the content with the mapped genre ID
     const res = await fetch(
-      `${TMDB_API_URL}/discover/${type}?api_key=${TMDB_API_KEY}&with_genres=${genreId}&page=${page}&language=en-US&include_adult=false&sort_by=popularity.desc`,
+      `${TMDB_API_URL}/discover/${typeParse.data}?api_key=${TMDB_API_KEY}&with_genres=${genreId}&page=${page}&language=en-US&include_adult=false&sort_by=popularity.desc`,
       { 
         next: { revalidate: 3600 },
         headers: {
@@ -58,17 +81,18 @@ export async function GET(
     )
 
     if (!res.ok) {
-      const error = await res.json()
+      // L-07: fixed error text, no upstream status_message passthrough
+      const status = res.status >= 400 && res.status < 500 ? res.status : 502;
       return NextResponse.json(
-        { error: error.status_message || `Failed to fetch ${type} for genre` },
-        { status: res.status }
+        { error: 'Failed to fetch genre content' },
+        { status }
       )
     }
 
     const data = await res.json()
     if (!data.results) {
       return NextResponse.json(
-        { error: 'Invalid response from TMDB API' },
+        { error: 'Invalid response from upstream service' },
         { status: 500 }
       )
     }
@@ -77,7 +101,7 @@ export async function GET(
   } catch (error) {
     console.error('Genre content API error:', error)
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch genre content' },
+      { error: 'Failed to fetch genre content' },
       { status: 500 }
     )
   }

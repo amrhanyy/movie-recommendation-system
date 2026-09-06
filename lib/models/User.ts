@@ -8,6 +8,7 @@ export interface IUser {
   preferences?: {
     favorite_genres: string[];
     selected_moods: string[];
+    historyTrackingEnabled?: boolean;
   };
   created_at: Date;
 }
@@ -19,7 +20,8 @@ const UserSchema = new Schema<IUser>({
   role: { type: String, enum: ['user', 'admin', 'owner'], default: 'user' },
   preferences: {
     favorite_genres: [String],
-    selected_moods: [String]
+    selected_moods: [String],
+    historyTrackingEnabled: { type: Boolean, default: true }
   },
   created_at: { type: Date, default: Date.now }
 });

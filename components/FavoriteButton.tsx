@@ -16,14 +16,17 @@ export function FavoriteButton({ itemId, type, title, posterPath }: FavoriteButt
 
   return (
     <button
+      type="button"
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
         toggleFavorite();
       }}
-      className={`absolute top-2 left-2 p-2 rounded-full bg-black/50 backdrop-blur-sm 
-                 transition-all duration-300 ${isFavorite ? 'text-pink-500' : 'text-white'}`}
+      aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+      aria-pressed={isFavorite}
       title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+      className={`absolute top-2 left-2 p-2 rounded-full bg-black/50 backdrop-blur-sm
+                 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${isFavorite ? 'text-pink-500' : 'text-white'}`}
     >
       {isLoading ? (
         <LoadingSpinner className="w-5 h-5" />

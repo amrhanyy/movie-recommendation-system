@@ -5,15 +5,16 @@ import { useRouter } from "next/navigation"
 import { useEffect, useState, useRef } from "react"
 import Image from "next/image"
 import { use } from 'react'
-import { Calendar, Clock, Star, TrendingUp, ExternalLink, Play, ChevronLeft, ChevronRight, Bookmark, Sparkles } from 'lucide-react'
+import { Calendar, Clock, Star, TrendingUp, ExternalLink, ChevronLeft, ChevronRight, Bookmark, Sparkles } from 'lucide-react'
 import PageWrapper from '@/components/PageWrapper'  // Updated import
 import { Section } from '@/components/Section'
 import { MovieTrailer } from '@/components/MovieTrailer'
 import { HistoryTracker } from '@/components/HistoryTracker'
-import { useWatchlist } from '@/hooks/useWatchlist';
 import { FavoriteButton } from '@/components/FavoriteButton';
 import { LoadingSpinner } from '@/components/LoadingSpinner'
-import { useSession, signIn } from 'next-auth/react'
+import { SafeExternalLink } from '@/components/SafeExternalLink'
+import { useWatchlistContext } from '@/contexts/WatchlistContext'
+import Link from 'next/link'
 
 interface DetailedMovie {
   id: number
@@ -98,20 +99,11 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
   const [isLoading, setIsLoading] = useState(true)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const similarScrollRef = useRef<HTMLDivElement>(null)  // Add new ref for similar movies
-  const [isSaved, setIsSaved] = useState(false)
-  const { data: session } = useSession()
-  const [watchlistItems, setWatchlistItems] = useState<Set<number>>(new Set())
+  const { isInWatchlist, toggleWatchlist } = useWatchlistContext()
   const [usesAI, setUsesAI] = useState(true)
 
   const unwrappedParams = use(params)
   const movieId = unwrappedParams.id
-
-  const { isInWatchlist, isLoading: watchlistLoading, toggleWatchlist } = useWatchlist(
-    movie?.id || 0,
-    'movie',
-    movie?.title || '',
-    movie?.poster_path || null
-  );
 
   const scroll = (direction: 'left' | 'right', ref: React.RefObject<HTMLDivElement>) => {
     if (ref.current) {
@@ -124,109 +116,29 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
     }
   }
 
-  const handleSaveMovie = async (e: React.MouseEvent) => {
+  const handleSaveMovie = (e: React.MouseEvent) => {
     e.stopPropagation();
-    await toggleWatchlist();
+    if (!movie) return;
+    void toggleWatchlist({
+      itemId: movie.id,
+      type: 'movie',
+      title: movie.title,
+      posterPath: movie.poster_path
+    });
   };
 
   const handleGenreClick = (genreId: number, genreName: string) => {
     router.push(`/genre/${genreId}?type=movie&name=${encodeURIComponent(genreName)}`);
   };
 
-  const fetchWatchlistStatus = async () => {
-    try {
-      const response = await fetch('/api/watchlist');
-      if (response.ok) {
-        const data = await response.json();
-        const itemIds = new Set<number>(data
-          .filter((item: { itemId: number }) => typeof item.itemId === 'number')
-          .map((item: { itemId: number }) => item.itemId)
-        );
-        setWatchlistItems(itemIds);
-      }
-    } catch (error) {
-      console.error('Error fetching watchlist status:', error);
-    }
-  };
-
-  const handleWatchlistToggle = async (movie: any, e: React.MouseEvent) => {
+  const handleSimilarWatchlistToggle = (movie: MovieRecommendation, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!session) {
-      signIn();
-      return;
-    }
-    
-    try {
-      const response = await fetch('/api/watchlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          itemId: movie.id,
-          type: 'movie',
-          title: movie.title,
-          posterPath: movie.poster_path
-        }),
-      });
-
-      if (response.ok) {
-        setWatchlistItems(prev => {
-          const newSet = new Set(prev);
-          if (newSet.has(movie.id)) {
-            newSet.delete(movie.id);
-          } else {
-            newSet.add(movie.id);
-          }
-          return newSet;
-        });
-      }
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
-  };
-
-  const handleSimilarWatchlistToggle = async (movie: MovieRecommendation, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    if (!session) {
-      signIn();
-      return;
-    }
-    
-    try {
-      const isInWatchlist = watchlistItems.has(movie.id);
-      
-      if (isInWatchlist) {
-        const response = await fetch(`/api/watchlist?itemId=${movie.id}&type=movie`, {
-          method: 'DELETE'
-        });
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: movie.id,
-            type: 'movie',
-            title: movie.title,
-            posterPath: movie.poster_path
-          }),
-        });
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems(prev => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(movie.id);
-        } else {
-          newSet.add(movie.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: movie.id,
+      type: 'movie',
+      title: movie.title,
+      posterPath: movie.poster_path
+    });
   };
 
   useEffect(() => {
@@ -273,7 +185,6 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
     }
 
     fetchMovieAndRelated()
-    fetchWatchlistStatus();
   }, [movieId])
 
   const formatCurrency = (value: number | undefined | null) => {
@@ -331,14 +242,17 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
                   />
                   {/* Save Button */}
                   <button
+                    type="button"
                     onClick={handleSaveMovie}
+                    aria-pressed={isInWatchlist(movie.id)}
+                    aria-label={isInWatchlist(movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`}
                     className="absolute top-4 right-4 p-2 rounded-full
                             bg-black/50 backdrop-blur-sm border border-gray-700/50
                             text-white hover:bg-black/70 hover:scale-110
-                            transition-all duration-300 z-10"
+                            transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                   >
-                    <Bookmark 
-                      className={`w-5 h-5 ${isInWatchlist ? 'fill-white' : ''}`} 
+                    <Bookmark
+                      className={`w-5 h-5 ${isInWatchlist(movie.id) ? 'fill-white' : ''}`}
                     />
                   </button>
                   <FavoriteButton
@@ -352,17 +266,15 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
                 {/* Official Website Link */}
                 {movie.homepage && (
                   <div className="mt-6">
-                    <a 
+                    <SafeExternalLink
                       href={movie.homepage}
-                      target="_blank"
-                      rel="noopener noreferrer"
                       className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-xl
                               bg-gray-800/40 backdrop-blur-sm border border-gray-700/50
                               text-gray-300 hover:text-white hover:border-gray-600 transition-all duration-300"
                     >
                       <ExternalLink className="w-4 h-4" />
                       <span>Official Website</span>
-                    </a>
+                    </SafeExternalLink>
                   </div>
                 )}
               </div>
@@ -464,7 +376,7 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
         <div className="lg:col-span-3 space-y-8">
           {/* Tagline */}
           {movie.tagline && (
-            <p className="text-2xl text-gray-400 italic text-center mb-12">"{movie.tagline}"</p>
+            <p className="text-2xl text-gray-400 italic text-center mb-12">&quot;{movie.tagline}&quot;</p>
           )}
 
           {/* Content Sections Grid */}
@@ -591,15 +503,17 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
                     <div className="relative aspect-square rounded-full overflow-hidden mb-2 
                                 transform group-hover:scale-105 transition-all duration-300 
                                 border-2 border-gray-700/50 hover:border-cyan-500/50">
-                      <Image
-                        src={person.profile_path 
-                          ? `https://image.tmdb.org/t/p/w185${person.profile_path}`
-                          : '/placeholder-avatar.png'
+                    <Image
+                      src={person.profile_path
+                        ? `https://image.tmdb.org/t/p/w185${person.profile_path}`
+                        : '/images/placeholder-avatar.png'
                         }
-                        alt={person.name}
-                        fill
-                        className="object-cover"
-                      />
+                      alt={person.name}
+                      fill
+                      sizes="(max-width: 640px) 25vw, (max-width: 1024px) 15vw, 10vw"
+                      loading="lazy"
+                      className="object-cover"
+                    />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
                                   opacity-0 group-hover:opacity-100 transition-all duration-500" />
                     </div>
@@ -635,55 +549,65 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
           </div>
 
           <div className="relative group">
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('left', similarScrollRef)}
-              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll left"
+              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronLeft className="w-8 h-8" />
             </button>
 
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('right', similarScrollRef)}
-              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll right"
+              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronRight className="w-8 h-8" />
             </button>
 
-            <div 
+            <div
               ref={similarScrollRef}
               className="flex space-x-6 overflow-x-auto scrollbar-hide scroll-smooth pb-4"
             >
               {similarMovies.map((movie) => (
-                <div
+                <Link
                   key={movie.id}
-                  className="flex-none w-[180px] group/item cursor-pointer"
-                  onClick={() => router.push(`/movie/${movie.id}`)}
+                  href={`/movie/${movie.id}`}
+                  aria-label={`View details for ${movie.title}`}
+                  className="flex-none w-[180px] group/item block focus:outline-none"
                 >
                   <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                               transform group-hover/item:scale-105 transition-all duration-300 
                               border border-gray-700/50">
                     <Image
-                      src={movie.poster_path 
+                      src={movie.poster_path
                         ? `https://image.tmdb.org/t/p/w342${movie.poster_path}`
-                        : '/placeholder-poster.png'
+                        : '/images/placeholder-poster.png'
                       }
                       alt={movie.title}
                       fill
+                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 15vw"
+                      loading="lazy"
                       className="object-cover"
                     />
                     <button
+                      type="button"
                       onClick={(e) => handleSimilarWatchlistToggle(movie, e)}
+                      aria-pressed={isInWatchlist(movie.id)}
+                      aria-label={isInWatchlist(movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`}
                       className="absolute top-2 right-2 p-2 rounded-full
                                 bg-black/50 backdrop-blur-sm border border-gray-700/50
                                 text-white hover:bg-black/70 hover:scale-110
-                                transition-all duration-300 z-10"
+                                transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                     >
-                      <Bookmark 
-                        className={`w-4 h-4 ${watchlistItems.has(movie.id) ? 'fill-white' : ''}`} 
+                      <Bookmark
+                        className={`w-4 h-4 ${isInWatchlist(movie.id) ? 'fill-white' : ''}`}
                       />
                     </button>
                     <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -706,7 +630,7 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
                   <p className="text-gray-400 text-xs">
                     {movie.release_date ? new Date(movie.release_date).getFullYear() : 'N/A'}
                   </p>
-                </div>
+                </Link>
               ))}
             </div>
           </div>
@@ -722,55 +646,65 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
           </div>
 
           <div className="relative group">
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('left', scrollContainerRef)}
-              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll left"
+              className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronLeft className="w-8 h-8" />
             </button>
 
-            <button 
+            <button
+              type="button"
               onClick={() => scroll('right', scrollContainerRef)}
-              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 
-                        text-white p-3 rounded-full opacity-0 group-hover:opacity-100 
+              aria-label="Scroll right"
+              className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70
+                        text-white p-3 rounded-full opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                         transition-opacity duration-300 backdrop-blur-sm"
             >
               <ChevronRight className="w-8 h-8" />
             </button>
 
-            <div 
+            <div
               ref={scrollContainerRef}
               className="flex space-x-6 overflow-x-auto scrollbar-hide scroll-smooth pb-4"
             >
               {recommendations.map((movie) => (
-                <div
+                <Link
                   key={movie.id}
-                  className="flex-none w-[180px] group/item cursor-pointer"
-                  onClick={() => router.push(`/movie/${movie.id}`)}
+                  href={`/movie/${movie.id}`}
+                  aria-label={`View details for ${movie.title}`}
+                  className="flex-none w-[180px] group/item block focus:outline-none"
                 >
                   <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                               transform group-hover/item:scale-105 transition-all duration-300 
                               border border-gray-700/50">
                     <Image
-                      src={movie.poster_path 
+                      src={movie.poster_path
                         ? `https://image.tmdb.org/t/p/w342${movie.poster_path}`
-                        : '/placeholder-poster.png'
+                        : '/images/placeholder-poster.png'
                       }
                       alt={movie.title}
                       fill
+                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 15vw"
+                      loading="lazy"
                       className="object-cover"
                     />
                     <button
+                      type="button"
                       onClick={(e) => handleSimilarWatchlistToggle(movie, e)}
+                      aria-pressed={isInWatchlist(movie.id)}
+                      aria-label={isInWatchlist(movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`}
                       className="absolute top-2 right-2 p-2 rounded-full
                                 bg-black/50 backdrop-blur-sm border border-gray-700/50
                                 text-white hover:bg-black/70 hover:scale-110
-                                transition-all duration-300 z-10"
+                                transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                     >
-                      <Bookmark 
-                        className={`w-4 h-4 ${watchlistItems.has(movie.id) ? 'fill-white' : ''}`} 
+                      <Bookmark
+                        className={`w-4 h-4 ${isInWatchlist(movie.id) ? 'fill-white' : ''}`}
                       />
                     </button>
                     <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -788,7 +722,7 @@ export default function MoviePage({ params }: { params: Promise<{ id: string }> 
                   <p className="text-gray-400 text-xs">
                     {new Date(movie.release_date).getFullYear()}
                   </p>
-                </div>
+                </Link>
               ))}
             </div>
           </div>

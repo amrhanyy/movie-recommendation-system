@@ -95,28 +95,32 @@ const LanguageContext = createContext<LanguageContextType>(defaultContext)
 export const useLanguage = () => useContext(LanguageContext)
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
+  // Default to English immediately so the app never renders blank while the
+  // system language is resolved in the background (Phase 3: no blocking gate).
   const [language, setLanguage] = useState('en-US')
-  const [isLoading, setIsLoading] = useState(true)
-  
+
   useEffect(() => {
-    // Fetch the system default language on first load
+    // Best-effort: adopt a server-configured default language without holding
+    // the DOM hostage. Failures are silent (we simply keep en-US).
+    let cancelled = false
     const fetchSystemLanguage = async () => {
       try {
         const response = await fetch('/api/features')
         if (response.ok) {
           const data = await response.json()
-          if (data.content?.defaultLanguage) {
+          if (!cancelled && data.content?.defaultLanguage) {
             setLanguage(data.content.defaultLanguage)
           }
         }
-      } catch (error) {
-        console.error('Failed to fetch system language:', error)
-      } finally {
-        setIsLoading(false)
+      } catch {
+        // Ignore — keep the default language.
       }
     }
-    
+
     fetchSystemLanguage()
+    return () => {
+      cancelled = true
+    }
   }, [])
   
   // Function to translate a key
@@ -145,7 +149,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
         getDisplayName
       }}
     >
-      {!isLoading && children}
+      {children}
     </LanguageContext.Provider>
   )
 }

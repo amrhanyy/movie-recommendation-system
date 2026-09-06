@@ -9,6 +9,21 @@ interface FetchOptions extends RequestInit {
 }
 
 /**
+ * Build a log-safe URL (M-02): keep origin + pathname, drop the query string.
+ * Query strings carry credentials (e.g. TMDB `api_key=...`) and must never
+ * reach stdout/stderr.
+ */
+export function redactUrlForLog(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    // Not a valid absolute URL — never echo the raw value.
+    return '[invalid-url]';
+  }
+}
+
+/**
  * Fetch with retry logic and proper error handling
  * @param url The URL to fetch
  * @param options Fetch options with additional retry configuration
@@ -52,19 +67,22 @@ export async function fetchWithRetry(url: string, options: FetchOptions = {}): P
       }
       
       return response;
-    } catch (error: any) {
-      lastError = error;
+    } catch (error: unknown) {
+      lastError = error instanceof Error ? error : new Error(String(error));
       
       // Don't retry if we've been explicitly aborted or if we're out of retries
-      if (error.name === 'AbortError' || attempt >= retries) {
+      if (
+        (error instanceof Error && error.name === 'AbortError') ||
+        attempt >= retries
+      ) {
         break;
       }
       
       // Clear the existing timeout and create a new one for the next attempt
       clearTimeout(timeoutId);
       
-      // Log the retry attempt
-      console.warn(`Fetch attempt ${attempt} failed for ${url}. Retrying in ${retryDelay}ms...`);
+      // Log the retry attempt (M-02: never log the full URL — it carries api_key)
+      console.warn(`Fetch attempt ${attempt} failed for ${redactUrlForLog(url)}. Retrying in ${retryDelay}ms...`);
       
       // Wait before retrying
       await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -73,12 +91,12 @@ export async function fetchWithRetry(url: string, options: FetchOptions = {}): P
 
   // If we've exhausted all retries, throw the last error
   if (lastError) {
-    console.error(`All ${retries} fetch attempts failed for ${url}:`, lastError);
+    console.error(`All ${retries} fetch attempts failed for ${redactUrlForLog(url)}:`, lastError);
     throw lastError;
   }
 
   // This should never happen, but TypeScript needs it
-  throw new Error(`Failed to fetch ${url} after ${retries} attempts`);
+  throw new Error(`Failed to fetch ${redactUrlForLog(url)} after ${retries} attempts`);
 }
 
 /**

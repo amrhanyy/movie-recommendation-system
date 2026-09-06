@@ -1,140 +1,139 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireSession } from '@/lib/security/auth';
+import {
+  applyRateLimitUser,
+  RATE_LIMITS,
+} from '@/lib/security/rateLimit';
 import redisCache from '../../../../../lib/cache';
+import {
+  AIUpstreamError,
+  extractGeminiText,
+  mapAIError,
+  parseAISimilarMoviesFromText,
+} from '@/lib/ai-security';
+import {
+  buildSimilarMoviesGeminiPayload,
+  GEMINI_GENERATE_URL,
+} from '@/lib/gemini-payload';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const BASE_URL = 'https://api.themoviedb.org/3';
 
-async function getAISimilarMovies(movieDetails: any) {
-  // Add retry parameters
+interface MovieDetailItem {
+  title?: string;
+  release_date?: string;
+  overview?: string | null;
+  genres?: { name: string }[];
+  credits?: {
+    crew?: { job: string; name: string }[];
+    cast?: { name: string }[];
+  };
+}
+
+async function getAISimilarMovies(movieDetails: MovieDetailItem) {
+  if (!GOOGLE_API_KEY) {
+    throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
+  }
   const maxRetries = 3;
   let retryCount = 0;
-  let backoffTime = 1000; // Start with 1 second backoff
+  let backoffTime = 1000;
   
   while (retryCount < maxRetries) {
     try {
-      // Create a detailed prompt about the movie
-      const prompt = `
-        As a movie recommendation AI, suggest similar movies to "${movieDetails.title}" (${movieDetails.release_date?.slice(0, 4) || 'N/A'}).
-        
-        Movie details:
-        - Genres: ${movieDetails.genres?.map((g: any) => g.name).join(', ') || 'N/A'}
-        - Overview: ${movieDetails.overview || 'N/A'}
-        - Director: ${movieDetails.credits?.crew?.find((c: any) => c.job === 'Director')?.name || 'N/A'}
-        - Cast: ${movieDetails.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ') || 'N/A'}
-        
-        Provide recommendations that match the tone, themes, and style of this movie.
-        Each recommendation should be unique and from similar sub-genre categories.
-        
-        Generate recommendations in the following JSON format:
-        {
-          "similar_movies": [
-            {
-              "title": "exact movie title",
-              "year": "year of release (YYYY)",
-              "reasoning": "brief explanation of why this is similar (tone, theme, style, etc.)"
-            }
-          ]
-        }
-        
-        Return ONLY the JSON object, no additional text.
-        Include exactly 12 highly relevant movie recommendations.
-      `;
-      
-      // Using Google's Gemini API
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_API_KEY}`, {
+      const response = await fetch(GEMINI_GENERATE_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-goog-api-key': GOOGLE_API_KEY,
         },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 1500,
-            topP: 0.95,
-            topK: 40
-          }
-        })
+        body: JSON.stringify(buildSimilarMoviesGeminiPayload(movieDetails)),
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API Error:', errorText);
-        
-        // Check if it's a 503 Service Unavailable or other retryable error
         if (response.status === 503 || response.status === 429 || response.status >= 500) {
           retryCount++;
           if (retryCount < maxRetries) {
-            console.log(`Retrying AI request (attempt ${retryCount}/${maxRetries}) after ${backoffTime}ms...`);
             await new Promise(resolve => setTimeout(resolve, backoffTime));
-            backoffTime *= 2; // Exponential backoff
-            continue; // Try again
+            backoffTime *= 2;
+            continue;
           }
         }
-        
-        throw new Error(`Failed to get AI similar movies: ${response.status} ${response.statusText}`);
+        throw new AIUpstreamError(
+          mapAIError(response.status, false).code,
+          `AI service error ${response.status}`
+        );
       }
 
-      const data = await response.json();
-      
-      // Extract content from Google API response
-      let content = '';
-      if (data.candidates && data.candidates.length > 0 && data.candidates[0].content) {
-        const parts = data.candidates[0].content.parts;
-        if (parts && parts.length > 0) {
-          content = parts[0].text || '';
-        }
-      }
-
-      if (!content) {
-        console.error('Unexpected API response structure:', data);
-        return [];
-      }
-
-      // Parse the JSON response
+      let raw: unknown;
       try {
-        // First try direct parsing in case it's already valid JSON
-        const cleanedContent = content
-          .replace(/```json\n?|\n?```/g, '') // Remove JSON code blocks
-          .replace(/\\n/g, ' ') // Replace escaped newlines
-          .trim();
-          
-        const parsed = JSON.parse(cleanedContent);
-        return parsed.similar_movies || [];
-      } catch (error) {
-        console.error('Parse error:', error);
-        return [];
+        raw = await response.json();
+      } catch {
+        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
       }
+
+      const content = extractGeminiText(raw);
+      if (!content) {
+        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
+      }
+
+      const validated = parseAISimilarMoviesFromText(content);
+      if (!validated) {
+        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
+      }
+      return validated.similar_movies;
     } catch (error) {
       retryCount++;
-      if (retryCount < maxRetries && (error instanceof Error && error.message.includes('503'))) {
-        console.log(`Retrying after error (attempt ${retryCount}/${maxRetries}) after ${backoffTime}ms:`, error);
+      if (
+        retryCount < maxRetries &&
+        error instanceof AIUpstreamError &&
+        error.code === "AI_UNAVAILABLE"
+      ) {
         await new Promise(resolve => setTimeout(resolve, backoffTime));
-        backoffTime *= 2; // Exponential backoff
+        backoffTime *= 2;
+      } else if (error instanceof AIUpstreamError) {
+        throw error;
       } else {
-        console.error('AI Request Error:', error);
+        console.error('AI request failed');
         return [];
       }
     }
   }
   
-  // If we've exhausted all retries
-  console.error(`Failed after ${maxRetries} retry attempts`);
-  return [];
+  throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable after retries");
 }
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    // Require authenticated session — no unauthenticated Gemini access (F-006 fix)
+    const authResult = await requireSession();
+    if (!authResult.ok) {
+      return authResult.response;
+    }
+
+    // Rate limit: 10 AI similar requests per minute per user (F-011 fix)
+    const rateLimitResponse = await applyRateLimitUser(
+      request,
+      authResult.user.email,
+      RATE_LIMITS.aiSimilar
+    );
+    if (rateLimitResponse) {
+      return rateLimitResponse;
+    }
+
     const { id: movieId } = await params;
-    
+
+    // Validate TMDB ID is a positive integer before any external call (F-033)
+    if (!/^\d{1,10}$/.test(movieId)) {
+      return NextResponse.json(
+        { error: "Invalid movie ID" },
+        { status: 400 }
+      );
+    }
+
     // Cache key for AI similar movies
     const cacheKey = `movie:${movieId}:ai-similar`;
     
@@ -142,7 +141,7 @@ export async function GET(
     let aiSuggestions = await redisCache.getOrSet(
       cacheKey,
       async () => {
-        console.log(`Cache miss - generating AI similar movies for ${movieId}`);
+        console.log(`Cache miss - generating AI similar movies`);
         
         // First, get the movie details to use for the prompt
         const detailsResponse = await fetch(
@@ -166,8 +165,8 @@ export async function GET(
           }
           
           return aiResults;
-        } catch (aiError) {
-          console.error('Error in AI recommendations, using TMDB fallback:', aiError);
+        } catch {
+          console.error('AI similar fallback to TMDB');
           
           // Fallback to TMDB similar movies
           try {
@@ -183,13 +182,16 @@ export async function GET(
             const similarData = await similarResponse.json();
             
             // Format TMDB results to match our expected format
-            return similarData.results.slice(0, 12).map((movie: any) => ({
+            return similarData.results.slice(0, 12).map((movie: {
+              title: string;
+              release_date?: string;
+            }) => ({
               title: movie.title,
               year: movie.release_date?.slice(0, 4) || '',
               reasoning: 'Similar movie recommended by TMDB'
             }));
-          } catch (tmdbError) {
-            console.error('TMDB fallback also failed:', tmdbError);
+          } catch {
+            console.error('TMDB similar fallback failed');
             return []; // Return empty if all methods fail
           }
         }
@@ -213,20 +215,27 @@ export async function GET(
           const popularData = await popularResponse.json();
           
           // Format popular movies as fallback
-          aiSuggestions = popularData.results.slice(0, 12).map((movie: any) => ({
+          aiSuggestions = popularData.results.slice(0, 12).map((movie: {
+            title: string;
+            release_date?: string;
+          }) => ({
             title: movie.title,
             year: movie.release_date?.slice(0, 4) || '',
             reasoning: 'Popular movie you might enjoy'
           }));
         }
-      } catch (fallbackError) {
-        console.error('Emergency fallback failed:', fallbackError);
+      } catch {
+        console.error('Emergency fallback failed');
       }
     }
     
     // Now fetch TMDB details for these movie recommendations
     const enhancedRecommendations = await Promise.all(
-      aiSuggestions.map(async (movie: any) => {
+      aiSuggestions.map(async (movie: {
+        title: string;
+        year?: string;
+        reasoning?: string;
+      }) => {
         try {
           // Search for the movie in TMDB
           const searchResponse = await fetch(
@@ -263,8 +272,8 @@ export async function GET(
             id: null,
             vote_average: 0
           };
-        } catch (error) {
-          console.error('Error fetching movie data from TMDB:', error);
+        } catch {
+          console.error('TMDB search failed');
           return {
             ...movie,
             poster_path: null,
@@ -275,11 +284,11 @@ export async function GET(
       })
     );
     
-    const validRecommendations = enhancedRecommendations.filter((movie: any) => movie.id !== null);
+    const validRecommendations = enhancedRecommendations.filter((movie: { id: number | null }) => movie.id !== null);
     
     return NextResponse.json({ results: validRecommendations });
-  } catch (error) {
-    console.error('Error in AI similar movies route:', error);
+  } catch {
+    console.error('AI similar movies request failed');
     return NextResponse.json(
       { error: 'Failed to generate similar movies' },
       { status: 500 }

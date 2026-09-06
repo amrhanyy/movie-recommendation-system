@@ -1,128 +1,207 @@
-import { NextResponse } from "next/server";
-import type { GeminiResponse } from "@/types/gemini";
+import { NextRequest, NextResponse } from "next/server";
+import { requireSession } from "@/lib/security/auth";
+import {
+  applyRateLimitUser,
+  RATE_LIMITS,
+} from "@/lib/security/rateLimit";
+import connectToMongoDB from "@/lib/mongodb";
+import { ChatHistory } from "@/lib/models/ChatHistory";
+import { chatRequestSchema } from "@/lib/security/schemas";
+import {
+  AIUpstreamError,
+  extractGeminiText,
+  httpStatusForAIError,
+  mapAIError,
+  redactSensitive,
+} from "@/lib/ai-security";
+import {
+  boundChatHistory,
+  buildChatGeminiPayload,
+  GEMINI_GENERATE_URL,
+  type ChatTurn,
+} from "@/lib/gemini-payload";
+
+interface ChatHistoryDoc {
+  messages?: { role: string; content: string }[];
+}
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+const GEMINI_TIMEOUT_MS = 15_000;
+const MAX_MESSAGES_PER_CHAT = 200;
 
-interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-async function getGeminiResponse(currentMessage: string, previousMessages: ChatMessage[] = []) {
+/**
+ * Call Gemini with the API key in the x-goog-api-key header (no key in URL).
+ * Upstream bodies are never logged or returned.
+ */
+async function getGeminiResponse(
+  currentMessage: string,
+  history: ChatTurn[]
+): Promise<string> {
   if (!GOOGLE_API_KEY) {
-    throw new Error("GOOGLE_API_KEY is not configured");
+    throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
   }
 
-  try {
-    // Prepare message history for the Gemini API
-    const messageParts = [];
-    
-    // System message always comes first
-    messageParts.push({
-      text: "be friendly and helpful. You are a helpful AI assistant specialized in movies and TV shows. Please provide information, recommendations, and answer questions related only to films and television. Do not discuss topics outside of these areas.make your answers in markdown format"
-    });
-    
-    // Add previous messages in chronological order
-    for (const msg of previousMessages) {
-      messageParts.push({
-        text: `${msg.role === 'user' ? 'User: ' : 'Assistant: '}${msg.content}`
+  const maxRetries = 3;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    attempt++;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    try {
+      const response = await fetch(GEMINI_GENERATE_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": GOOGLE_API_KEY,
+        },
+        body: JSON.stringify(buildChatGeminiPayload(currentMessage, history)),
+        signal: controller.signal,
       });
-    }
-    
-    // Add the current message
-    messageParts.push({
-      text: `User: ${currentMessage}`
-    });
-    
-    console.log('Making request to Google Gemini API with conversation history');
-    
-    const response = await fetch(`${API_URL}?key=${GOOGLE_API_KEY}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [{
-          parts: messageParts
-        }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1000,
-          topP: 0.95,
-          topK: 40
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        if (response.status === 503 && attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, attempt * 1000));
+          continue;
         }
-      }),
-    });
-
-    // Check response status
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Google API Error Response:", {
-        status: response.status,
-        statusText: response.statusText,
-        body: errorText
-      });
-      throw new Error(`API error ${response.status}: ${errorText}`);
-    }
-
-    const data: GeminiResponse = await response.json();
-    console.log('Google API Response:', JSON.stringify(data, null, 2));
-
-    // Extract content from Google API response
-    let content = '';
-    if (data.candidates && data.candidates.length > 0 && data.candidates[0].content) {
-      const parts = data.candidates[0].content.parts;
-      if (parts && parts.length > 0) {
-        content = parts[0].text || '';
+        const mapped = mapAIError(response.status, false);
+        throw new AIUpstreamError(mapped.code, `AI service error ${mapped.httpStatus}`);
       }
-    }
 
-    if (!content) {
-      console.error("Invalid API Response Format:", data);
-      throw new Error("Invalid response format from API");
-    }
+      let raw: unknown;
+      try {
+        raw = await response.json();
+      } catch {
+        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
+      }
 
-    // Remove any "Assistant: " prefix that might be in the response
-    if (content.startsWith('Assistant: ')) {
-      content = content.substring('Assistant: '.length);
+      const content = extractGeminiText(raw);
+      if (!content) {
+        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
+      }
+      return content;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof AIUpstreamError) throw error;
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new AIUpstreamError("AI_TIMEOUT", "AI request timed out");
+      }
+      console.error("AI request failed:", redactSensitive(String(error)));
+      throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable");
     }
-
-    return content;
-  } catch (error) {
-    console.error("Google Gemini request error:", error);
-    throw error;
   }
+
+  throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable");
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const { message, previousMessages } = await request.json();
-    console.log('Processing chat request for message:', message);
+    const authResult = await requireSession();
+    if (!authResult.ok) {
+      return authResult.response;
+    }
 
-    if (!message?.trim()) {
+    const userId = authResult.user.email;
+
+    const rateLimitResponse = await applyRateLimitUser(
+      request,
+      userId,
+      RATE_LIMITS.chat
+    );
+    if (rateLimitResponse) {
+      return rateLimitResponse;
+    }
+
+    let data: unknown;
+    try {
+      data = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const parseResult = chatRequestSchema.safeParse(data);
+    if (!parseResult.success) {
       return NextResponse.json(
-        { error: "Message is required" },
+        { error: "Invalid input" },
         { status: 400 }
       );
     }
 
-    const responseText = await getGeminiResponse(message, previousMessages || []);
-    console.log('Successfully generated response:', responseText.substring(0, 100) + '...');
-    
-    return NextResponse.json({ 
-      response: responseText,
-      status: 'success'
-    });
+    const { message, chatId } = parseResult.data;
+    // Client-supplied previousMessages is intentionally ignored (R5).
 
+    await connectToMongoDB();
+
+    let history: ChatTurn[] = [];
+    if (chatId) {
+      const chat = await ChatHistory.findOne({
+        _id: chatId,
+        userId,
+      }).lean<ChatHistoryDoc>();
+      if (!chat) {
+        return NextResponse.json(
+          { error: "Chat not found" },
+          { status: 403 }
+        );
+      }
+      history = (chat.messages || [])
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+          content: String(m.content || ""),
+        }));
+    }
+
+    const orderedHistory = boundChatHistory(history);
+    const responseText = await getGeminiResponse(message, orderedHistory);
+
+    let persistedChatId = chatId || "";
+    if (chatId) {
+      await ChatHistory.findOneAndUpdate(
+        { _id: chatId, userId },
+        {
+          $push: {
+            messages: {
+              $each: [
+                { role: "user", content: message, timestamp: new Date() },
+                { role: "assistant", content: responseText, timestamp: new Date() },
+              ],
+              $slice: -MAX_MESSAGES_PER_CHAT,
+            },
+          },
+          $set: { updatedAt: new Date() },
+        },
+        { new: true }
+      );
+    } else {
+      const created = await ChatHistory.create({
+        userId,
+        messages: [
+          { role: "user", content: message, timestamp: new Date() },
+          { role: "assistant", content: responseText, timestamp: new Date() },
+        ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      persistedChatId = String(created._id);
+    }
+
+    return NextResponse.json({
+      response: responseText,
+      chatId: persistedChatId || undefined,
+      status: "success",
+    });
   } catch (error) {
-    console.error("API route error:", error);
-    const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred";
+    if (error instanceof AIUpstreamError) {
+      return NextResponse.json(
+        { error: "Failed to process chat request", code: error.code },
+        { status: httpStatusForAIError(error.code) }
+      );
+    }
     return NextResponse.json(
-      { 
-        error: errorMessage,
-        status: 'error'
-      },
+      { error: "Failed to process chat request" },
       { status: 500 }
     );
   }

@@ -10,12 +10,16 @@ import { SearchBar } from "@/components/SearchBar"
 import { Toaster } from 'react-hot-toast'
 import { AdminNavLink } from "@/components/AdminNavLink"
 import { FeatureNavItems } from "@/components/layout/FeatureNavItems"
+import { MobileNav } from "@/components/layout/MobileNav"
 
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "Movie Recommendation System",
   description: "Get personalized movie recommendations based on your preferences",
+  icons: {
+    icon: "/favicon.svg",
+  },
 }
 
 export default function RootLayout({
@@ -53,6 +57,8 @@ export default function RootLayout({
                       <FeatureNavItems />
                       <AdminNavLink />
                     </nav>
+                    {/* Mobile navigation drawer trigger (< 768px) */}
+                    <MobileNav />
                     <div className="h-8 w-px bg-gradient-to-b from-transparent via-gray-700 to-transparent" />
                     <AuthButton />
                   </div>
@@ -64,7 +70,14 @@ export default function RootLayout({
               <div className="">{children}</div>
             </main>
 
-            
+            <footer className="border-t border-gray-800 py-6">
+              <div className="container-fluid flex flex-wrap items-center justify-center gap-6 text-sm text-gray-400">
+                <Link href="/privacy" className="hover:text-cyan-400 transition-colors">
+                  Privacy policy
+                </Link>
+                <span className="text-gray-600">MovieMind</span>
+              </div>
+            </footer>
           </div>
         </Providers>
         <Toaster position="bottom-center" />

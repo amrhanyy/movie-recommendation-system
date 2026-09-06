@@ -65,13 +65,14 @@ export function FavoriteGridItemCard({ item, onRemove }: FavoriteGridItemCardPro
         )}
         
         <Image
-          src={item.posterPath 
-            ? `https://image.tmdb.org/t/p/w500${item.posterPath}` 
-            : '/placeholder-poster.png'
+          src={item.posterPath
+            ? `https://image.tmdb.org/t/p/w500${item.posterPath}`
+            : '/images/placeholder-poster.png'
           }
           alt={item.title}
           fill
           sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 16vw"
+          loading="lazy"
           quality={85}
           className={`object-cover transform group-hover:scale-105 transition-transform duration-500 z-10 relative ${
             imageLoaded ? 'opacity-100' : 'opacity-0'
