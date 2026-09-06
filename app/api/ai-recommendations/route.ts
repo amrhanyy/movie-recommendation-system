@@ -14,8 +14,6 @@ import {
 } from '@/lib/ai-security';
 import {
   buildRecommendationGeminiPayload,
-  buildGeminiGenerateUrl,
-  GEMINI_FALLBACK_MODELS,
   GEMINI_GENERATE_URL,
   getGeminiApiKey,
 } from '@/lib/gemini-payload';
@@ -83,27 +81,10 @@ async function getAIRecommendations(preferences: string) {
   const maxRetries = 3;
   let retryCount = 0;
   let backoffTime = 1000;
-  const urls = [GEMINI_GENERATE_URL, ...GEMINI_FALLBACK_MODELS.map(buildGeminiGenerateUrl)];
-  let urlIndex = 0;
 
   while (retryCount < maxRetries) {
     try {
-      // Fall back to legacy models when the configured model is rejected.
-      const url = urls[Math.min(urlIndex, urls.length - 1)];
-      try {
-        return await postRecommendationsToGemini(url, apiKey, preferences);
-      } catch (error) {
-        if (
-          error instanceof AIUpstreamError &&
-          error.code === "AI_AUTH_ERROR" &&
-          urlIndex < urls.length - 1
-        ) {
-          console.error("[Gemini Model Fallback]", url);
-          urlIndex++;
-          continue;
-        }
-        throw error;
-      }
+      return await postRecommendationsToGemini(GEMINI_GENERATE_URL, apiKey, preferences);
     } catch (error) {
       if (
         error instanceof AIUpstreamError &&

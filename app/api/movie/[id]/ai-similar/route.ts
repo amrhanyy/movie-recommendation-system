@@ -13,8 +13,6 @@ import {
 } from '@/lib/ai-security';
 import {
   buildSimilarMoviesGeminiPayload,
-  buildGeminiGenerateUrl,
-  GEMINI_FALLBACK_MODELS,
   GEMINI_GENERATE_URL,
   getGeminiApiKey,
 } from '@/lib/gemini-payload';
@@ -39,16 +37,13 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
     throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
   }
 
-  const urls = [GEMINI_GENERATE_URL, ...GEMINI_FALLBACK_MODELS.map(buildGeminiGenerateUrl)];
-  let urlIndex = 0;
+  const maxRetries = 3;
   let backoffTime = 1000;
   let retryCount = 0;
-  const maxRetries = 3 * urls.length;
 
   while (retryCount < maxRetries) {
     try {
-      const url = urls[Math.min(urlIndex, urls.length - 1)];
-      const response = await fetch(url, {
+      const response = await fetch(GEMINI_GENERATE_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -66,11 +61,6 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
         }
         console.error('[Gemini Upstream Error]', response.status, errorData);
         const mappedCode = mapAIError(response.status, false).code;
-        if (mappedCode === "AI_AUTH_ERROR" && urlIndex < urls.length - 1) {
-          console.error('[Gemini Model Fallback]', url);
-          urlIndex++;
-          continue;
-        }
         if (response.status === 503 || response.status === 429 || response.status >= 500) {
           retryCount++;
           if (retryCount < maxRetries) {

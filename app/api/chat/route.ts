@@ -17,8 +17,6 @@ import {
 import {
   boundChatHistory,
   buildChatGeminiPayload,
-  buildGeminiGenerateUrl,
-  GEMINI_FALLBACK_MODELS,
   GEMINI_GENERATE_URL,
   getGeminiApiKey,
   type ChatTurn,
@@ -101,9 +99,8 @@ async function postToGemini(
 
 /**
  * Call Gemini with the API key in the x-goog-api-key header (no key in URL).
- * Falls back to legacy models when the configured model is rejected (404/400
- * model-not-found). Upstream bodies are logged server-side (redacted) and
- * never returned to the client.
+ * Single model (GEMINI_GENERATE_URL); 503s get one retry. Upstream bodies are
+ * logged server-side (redacted) and never returned to the client.
  */
 async function getGeminiResponse(
   currentMessage: string,
@@ -114,37 +111,20 @@ async function getGeminiResponse(
     throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
   }
 
-  const urls = [GEMINI_GENERATE_URL, ...GEMINI_FALLBACK_MODELS.map(buildGeminiGenerateUrl)];
-  let lastError: AIUpstreamError | null = null;
-
-  for (const url of urls) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await postToGemini(url, apiKey, currentMessage, history);
+      return await postToGemini(GEMINI_GENERATE_URL, apiKey, currentMessage, history);
     } catch (error) {
-      // Retry 503s on the primary model before falling back.
-      if (
-        error instanceof AIUpstreamError &&
-        error.code === "AI_UNAVAILABLE" &&
-        url === urls[0]
-      ) {
+      const isUnavailable = error instanceof AIUpstreamError && error.code === "AI_UNAVAILABLE";
+      if (isUnavailable && attempt === 0) {
         await new Promise((r) => setTimeout(r, 1000));
-        try {
-          return await postToGemini(url, apiKey, currentMessage, history);
-        } catch (retryError) {
-          lastError = retryError instanceof AIUpstreamError ? retryError : lastError;
-        }
+        continue;
       }
-      lastError = error instanceof AIUpstreamError ? error : lastError;
-      // Fall back only when the model itself is rejected (not found / invalid).
-      // Auth (401/403), quota (429), and overload (503) errors stop here.
-      const isModelRejection =
-        error instanceof AIUpstreamError && error.code === "AI_AUTH_ERROR" && url === urls[0];
-      if (!isModelRejection) throw error;
-      console.error("[Gemini Model Fallback]", redactSensitive(url));
+      throw error;
     }
   }
 
-  throw lastError ?? new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable");
+  throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable");
 }
 
 export async function POST(request: NextRequest) {

@@ -6,16 +6,17 @@ import {
   MAX_TMDB_OVERVIEW_CHARS,
 } from "./ai-security";
 
-export const GEMINI_MODEL =
-  (process.env.GEMINI_MODEL || "gemini-2.0-flash").trim() || "gemini-2.0-flash";
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
+export const getGeminiModel = (): string =>
+  (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
 
-export const GEMINI_FALLBACK_MODELS = ["gemini-1.5-flash"] as const;
-
-export function buildGeminiGenerateUrl(model: string): string {
+export function buildGeminiGenerateUrl(model: string = getGeminiModel()): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 }
 
-export const GEMINI_GENERATE_URL = buildGeminiGenerateUrl(GEMINI_MODEL);
+// Static exports for backward compat; routes resolve dynamically via getGeminiModel().
+export const GEMINI_MODEL = DEFAULT_GEMINI_MODEL;
+export const GEMINI_GENERATE_URL = buildGeminiGenerateUrl(DEFAULT_GEMINI_MODEL);
 
 /** Trimmed server key accessor: never put the key in a URL or response body. */
 export function getGeminiApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
