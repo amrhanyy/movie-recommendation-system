@@ -9,6 +9,7 @@ import { BackgroundPattern } from '@/components/BackgroundPattern'
 import { AuthCheck } from '@/components/AuthCheck'
 import { useRouter } from 'next/navigation'
 import { useFeatures } from '@/hooks/useFeatures'
+import { SafeMarkdown } from '@/lib/ai-markdown'
 
 interface MovieSection {
   type: 'movie' | 'tv' | 'person' | 'list'
@@ -32,8 +33,7 @@ interface Message {
 
 // Helper function to parse message content and extract structured sections
 const parseMessageContent = (content: string): { text: string, sections: MovieSection[] } => {
-  // First, remove any asterisks formatting
-  let text = content.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*\*/g, '')
+  let text = content
   const sections: MovieSection[] = []
   
   // Advanced content analysis that doesn't depend on explicit ### markers
@@ -148,101 +148,6 @@ const parseMessageContent = (content: string): { text: string, sections: MovieSe
   return { text: text.trim(), sections }
 }
 
-// Helper function to format assistant messages with proper HTML structure
-const formatAssistantMessage = (content: string): React.ReactNode => {
-  if (!content) return null;
-  
-  // First, clean any raw asterisks by replacing common patterns
-  let processedContent = content
-    // Replace asterisk bullet points with dash bullet points
-    .replace(/^\s*\*\s+([^*])/gm, '- $1')
-    // Convert double asterisks to bold text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    // Convert single asterisks to italic text (only if properly paired)
-    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
-    // Remove any remaining standalone asterisks
-    .replace(/\*/g, '')
-    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="underline text-cyan-400 hover:text-cyan-300 transition-colors">$1</a>')
-    // Convert code blocks with backticks
-    .replace(/```([\s\S]*?)```/g, '<pre class="bg-gray-800/70 rounded-md p-3 my-2 overflow-x-auto text-sm border border-gray-700/50"><code>$1</code></pre>')
-    // Convert inline code with single backticks
-    .replace(/`([^`]+)`/g, '<code class="bg-gray-800/70 px-1.5 py-0.5 rounded text-cyan-200 text-sm">$1</code>')
-    // Convert blockquotes
-    .replace(/^>\s+(.*?)$/gm, '<blockquote class="border-l-4 border-cyan-500/30 pl-4 italic text-gray-300">$1</blockquote>');
-  
-  // Process bullet points and numbered lists
-  const lines = processedContent.split('\n');
-  let inList = false;
-  let listType = '';
-  let listContent = '';
-  const processedLines: string[] = [];
-  
-  lines.forEach((line, i) => {
-    // Check for bullet points or numbered lists
-    const bulletMatch = line.match(/^(\s*)-\s+(.*?)$/);
-    const numberedMatch = line.match(/^(\s*)(\d+)\.\s+(.*?)$/);
-    
-    if (bulletMatch) {
-      // Start new list if we're not in one
-      if (!inList) {
-        inList = true;
-        listType = 'ul';
-        listContent = '';
-      } else if (inList && listType !== 'ul') {
-        // Close the previous list and start a new one
-        processedLines.push(`<${listType} class="list-${listType === 'ul' ? 'disc' : 'decimal'} list-inside my-3 space-y-1 pl-2">${listContent}</${listType}>`);
-        listContent = '';
-        listType = 'ul';
-      }
-      
-      listContent += `<li class="mb-1">${bulletMatch[2]}</li>`;
-    } else if (numberedMatch) {
-      // Start new list if we're not in one
-      if (!inList) {
-        inList = true;
-        listType = 'ol';
-        listContent = '';
-      } else if (inList && listType !== 'ol') {
-        // Close the previous list and start a new one
-        processedLines.push(`<${listType} class="list-${listType === 'ul' ? 'disc' : 'decimal'} list-inside my-3 space-y-1 pl-2">${listContent}</${listType}>`);
-        listContent = '';
-        listType = 'ol';
-      }
-      
-      listContent += `<li class="mb-1">${numberedMatch[3]}</li>`;
-    } else {
-      // If not a list item, close any open list
-      if (inList) {
-        processedLines.push(`<${listType} class="list-${listType === 'ul' ? 'disc' : 'decimal'} list-inside my-3 space-y-1 pl-2">${listContent}</${listType}>`);
-        inList = false;
-      }
-      
-      // Process headers
-      if (line.startsWith('# ')) {
-        processedLines.push(`<h1 class="text-xl font-bold text-cyan-300 mt-4 mb-2">${line.substring(2)}</h1>`);
-      } else if (line.startsWith('## ')) {
-        processedLines.push(`<h2 class="text-lg font-bold text-cyan-300 mt-3 mb-2">${line.substring(3)}</h2>`);
-      } else if (line.startsWith('### ')) {
-        processedLines.push(`<h3 class="text-md font-bold text-cyan-300 mt-2 mb-1">${line.substring(4)}</h3>`);
-      } else if (line.trim() === '') {
-        // Empty line
-        processedLines.push('<div class="my-2"></div>');
-      } else {
-        // Regular paragraph
-        processedLines.push(`<p class="my-2">${line}</p>`);
-      }
-    }
-  });
-  
-  // Close any open list at the end
-  if (inList) {
-    processedLines.push(`<${listType} class="list-${listType === 'ul' ? 'disc' : 'decimal'} list-inside my-3 space-y-1 pl-2">${listContent}</${listType}>`);
-  }
-  
-  // Return as dangerously set HTML
-  return <div dangerouslySetInnerHTML={{ __html: processedLines.join('') }} className="space-y-1" />;
-}
-
 export default function AIAssistant() {
   const router = useRouter()
   const { isEnabled, loading: featuresLoading } = useFeatures()
@@ -285,20 +190,10 @@ export default function AIAssistant() {
       const processMessages = (messages: Message[]) => {
         return messages.map((msg: Message) => {
           if (msg.role === 'assistant') {
-            // Clean any asterisks and formatting markers from the message content before parsing
-            const cleanedContent = msg.content
-              .replace(/\*\*/g, '')
-              .replace(/^\s*\*\s+/gm, '- ') // Convert asterisk bullet points to dashes
-              .replace(/\*([^*\n]+)\*/g, '$1') // Remove formatting asterisks
-              .replace(/\*/g, ''); // Remove any remaining standalone asterisks
-            
-            const { text, sections } = parseMessageContent(cleanedContent);
-            // Final cleaning of any remaining markers
-            const finalCleanedText = text.replace(/###|##|\*\*|#/g, '').trim();
-            
+            const { text, sections } = parseMessageContent(msg.content);
             return {
               ...msg,
-              content: finalCleanedText,
+              content: text.trim() || msg.content,
               sections,
               isStructured: sections.length > 0
             }
@@ -308,21 +203,21 @@ export default function AIAssistant() {
       };
       
       if (chatId) {
-        // Individual chat fetch
         const processedMessages = processMessages(data.messages || []);
         setMessages(processedMessages);
         setCurrentChatId(data._id);
       } else {
-        // Latest chat fetch - also process messages to clean formatting
-        if (Array.isArray(data) && data.length > 0) {
-          const processedMessages = processMessages(data);
-          setMessages(processedMessages);
+        const incoming = Array.isArray(data) ? data : data.messages;
+        const nextChatId = !Array.isArray(data) && typeof data.chatId === 'string' ? data.chatId : null;
+        if (Array.isArray(incoming) && incoming.length > 0) {
+          setMessages(processMessages(incoming));
         } else {
-          setMessages(data || []);
+          setMessages([]);
         }
+        if (nextChatId) setCurrentChatId(nextChatId);
       }
-    } catch (error) {
-      console.error('Error fetching chat history:', error);
+    } catch {
+      console.error('Chat history fetch failed');
     }
   };
 
@@ -341,8 +236,8 @@ export default function AIAssistant() {
       if (chatId === currentChatId) {
         startNewChat();
       }
-    } catch (error) {
-      console.error('Error deleting chat:', error);
+    } catch {
+      console.error('Chat delete failed');
     }
   };
 
@@ -355,92 +250,58 @@ export default function AIAssistant() {
     setIsLoading(true)
 
     try {
-      // Get AI response
+      // Get AI response. The client sends message + chatId only; history and
+      // persistence are handled server-side (R5 trust boundary).
       const chatResponse = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message: userMessage,
-          previousMessages: messages // Send all previous messages for context
+          chatId: currentChatId || undefined
         }),
       })
 
       if (!chatResponse.ok) {
-        const errorText = await chatResponse.text()
-        console.error('Chat API error:', chatResponse.status, errorText)
-        throw new Error(`Failed to get response: ${chatResponse.status}`)
+        console.error('Chat API error')
+        throw new Error('failed')
       }
       
-      // Try to safely parse the JSON response
-      let data
+      let data: { response?: unknown; chatId?: unknown }
       try {
-        data = await chatResponse.json()
-      } catch (parseError) {
-        console.error('JSON parse error:', parseError)
-        throw new Error('The server returned an invalid response format')
+        data = await chatResponse.json() as { response?: unknown; chatId?: unknown }
+      } catch {
+        console.error('JSON parse error')
+        throw new Error('invalid')
       }
-      
-      // Clean any asterisks from the response before processing
-      const cleanedResponse = data.response?.replace(/\*\*/g, '')
-        .replace(/^\s*\*\s+/gm, '- ') // Convert asterisk bullet points to dashes
-        .replace(/\*([^*\n]+)\*/g, '$1') // Remove formatting asterisks
-        .replace(/\*/g, '') || ''; // Remove any remaining standalone asterisks
-      
-      // Process AI response to extract structured sections
-      const { text, sections } = parseMessageContent(cleanedResponse)
-      
-      // Clean any remaining formatting markers from the text
-      const finalCleanedText = text.replace(/###|##|\*\*|#/g, '').trim()
-      
-      // Add messages to UI immediately
+
+      const assistantText = typeof data.response === 'string' ? data.response : ''
+      if (typeof data.chatId === 'string' && data.chatId) {
+        setCurrentChatId(data.chatId)
+      }
+
+      const { text, sections } = parseMessageContent(assistantText)
+
       const newMessages = [
         { role: 'user' as const, content: userMessage, timestamp: new Date() },
-        { 
-          role: 'assistant' as const, 
-          content: finalCleanedText, 
+        {
+          role: 'assistant' as const,
+          content: text.trim() || assistantText,
           timestamp: new Date(),
           sections,
           isStructured: sections.length > 0
         }
       ];
-      
+
       setMessages(prev => [...prev, ...newMessages]);
-
-      // Save to chat history
-      try {
-        const historyResponse = await fetch('/api/chat-history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: userMessage,
-            response: data.response, // Save original response for history
-            chatId: currentChatId
-          }),
-        });
-
-        if (historyResponse.ok) {
-          const historyData = await historyResponse.json();
-          // Set current chat ID if this is a new chat
-          if (!currentChatId) {
-            setCurrentChatId(historyData._id);
-          }
-        } else {
-          console.error('Failed to save chat history:', await historyResponse.text())
-        }
-      } catch (historyError) {
-        console.error('Error saving chat history:', historyError)
-      }
-    } catch (error) {
-      console.error('Chat error:', error)
+    } catch {
+      console.error('Chat error')
       setMessages(prev => [...prev, { 
         role: 'user' as const, 
         content: userMessage, 
         timestamp: new Date()
       }, { 
         role: 'assistant' as const, 
-        content: error instanceof Error 
-          ? `Sorry, I encountered an error: ${error.message}. Please try again later.` 
-          : 'Sorry, I encountered an unexpected error. Please try again later.',
+        content: 'Sorry, I encountered an unexpected error. Please try again later.',
         timestamp: new Date()
       }])
     } finally {
@@ -454,8 +315,16 @@ export default function AIAssistant() {
     setCurrentChatId(null);
   };
 
+  interface MovieCardItem {
+  id?: number;
+  title: string;
+  year?: string;
+  description?: string;
+  date?: string;
+}
+
   // Helper to render a movie/show card
-  const renderMovieItem = (item: any, sectionType: string) => {
+  const renderMovieItem = (item: MovieCardItem, sectionType: string) => {
     // Check if the item is likely a movie title or just a description
     const isLikelyMovieTitle = () => {
       // If the text is too long, it's probably a description not a title
@@ -618,8 +487,8 @@ export default function AIAssistant() {
                           {/* Main message content */}
                           {message.content && (
                             <div className={`prose prose-invert max-w-none leading-relaxed space-y-3 ${message.role === 'assistant' ? 'prose-headings:text-cyan-300 prose-strong:text-cyan-200 prose-a:text-cyan-400 hover:prose-a:text-cyan-300' : ''}`}>
-                              {message.role === 'assistant' 
-                                ? formatAssistantMessage(message.content) 
+                              {message.role === 'assistant'
+                                ? <SafeMarkdown content={message.content} />
                                 : <p className="whitespace-pre-wrap">{message.content}</p>}
                             </div>
                           )}

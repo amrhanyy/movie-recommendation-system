@@ -1,70 +1,92 @@
+#!/usr/bin/env node
 /**
- * Script to promote a user to owner role
- * Run with: node scripts/promote-owner.js [email]
+ * promote-owner.js
+ *
+ * Operational CLI for promoting a user to the owner role.
+ * This replaces the disabled HTTP endpoint POST /api/admin/promote (F-002).
+ *
+ * Requirements:
+ *   - Explicit target email
+ *   - Existing authenticated Google user record (user must have signed in at least once)
+ *   - Proof that no owner exists (or explicit --force to override)
+ *   - Never reveals the current owner email through HTTP
+ *   - Does not run automatically
+ *
+ * Usage:
+ *   node scripts/promote-owner.js <email>
+ *   node scripts/promote-owner.js <email> --force
+ *
+ * Environment:
+ *   MONGODB_URI must be set in .env or environment.
  */
-const mongoose = require('mongoose');
-require('dotenv').config();
 
-// User schema (simplified version of the actual model)
-const UserSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  name: String,
-  image: String,
-  role: { type: String, enum: ['user', 'admin', 'owner'], default: 'user' },
-  preferences: {
-    favorite_genres: [String],
-    selected_moods: [String]
-  },
-  created_at: { type: Date, default: Date.now }
-});
+const mongoose = require("mongoose");
+require("dotenv").config();
 
-// If the User model is already defined, use it; otherwise, define it
-const User = mongoose.models.User || mongoose.model('User', UserSchema);
+async function promoteOwner() {
+  const email = process.argv[2];
+  const force = process.argv.includes("--force");
 
-async function promoteToOwner() {
+  if (!email) {
+    console.error("Usage: node scripts/promote-owner.js <email> [--force]");
+    console.error("Error: email argument is required.");
+    process.exit(1);
+  }
+
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) {
+    console.error("Error: MONGODB_URI environment variable is not set.");
+    process.exit(1);
+  }
+
   try {
-    const email = process.argv[2];
-    
-    if (!email) {
-      console.error('Please provide an email address');
-      console.log('Usage: node scripts/promote-owner.js [email]');
-      process.exit(1);
-    }
-    
-    // Connect to MongoDB
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('Connected to MongoDB');
-    
+    await mongoose.connect(mongoUri);
+    console.log("Connected to MongoDB.");
+
+    const User = mongoose.models.User || mongoose.model("User", new mongoose.Schema({
+      email: { type: String, required: true, unique: true },
+      name: String,
+      image: String,
+      role: { type: String, enum: ["user", "admin", "owner"], default: "user" },
+      preferences: Object,
+      created_at: Date,
+    }));
+
     // Check if an owner already exists
-    const existingOwner = await User.findOne({ role: 'owner' });
-    if (existingOwner) {
-      console.log(`An owner already exists: ${existingOwner.email}`);
+    const existingOwner = await User.findOne({ role: "owner" });
+    if (existingOwner && !force) {
+      console.error("Error: An owner already exists.");
+      console.error("Use --force to override (this will demote the current owner to admin).");
       process.exit(1);
     }
-    
-    // Find the user to promote
-    const user = await User.findOne({ email });
-    if (!user) {
-      console.error(`User not found: ${email}`);
+
+    if (existingOwner && force) {
+      console.log("Warning: --force specified. Demoting current owner to admin.");
+      existingOwner.role = "admin";
+      await existingOwner.save();
+    }
+
+    // Find the target user
+    const targetUser = await User.findOne({ email });
+    if (!targetUser) {
+      console.error(`Error: User with email "${email}" not found.`);
+      console.error("The user must sign in via Google at least once before promotion.");
       process.exit(1);
     }
-    
-    // Promote the user to owner
-    user.role = 'owner';
-    await user.save();
-    
-    console.log(`User ${email} has been promoted to owner`);
-    console.log('Owner details:');
-    console.log(`  Name: ${user.name}`);
-    console.log(`  Email: ${user.email}`);
-    console.log(`  Role: ${user.role}`);
+
+    // Promote to owner
+    targetUser.role = "owner";
+    await targetUser.save();
+
+    console.log(`Success: User "${email}" has been promoted to owner.`);
+    await mongoose.disconnect();
+    process.exit(0);
   } catch (error) {
-    console.error('Error:', error);
-  } finally {
-    // Close the MongoDB connection
-    await mongoose.connection.close();
-    console.log('MongoDB connection closed');
+    console.error("Error: Failed to promote user.");
+    console.error(error.message);
+    await mongoose.disconnect();
+    process.exit(1);
   }
 }
 
-promoteToOwner(); 
+promoteOwner();

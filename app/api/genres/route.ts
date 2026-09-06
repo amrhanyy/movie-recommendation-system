@@ -1,9 +1,21 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Rate limit public TMDB proxy (M-03) — strict limit: this route fans out
+  // to ~20+ upstream discover calls per request
+  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxyStrict);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
+
+  if (!TMDB_API_KEY) {
+    return NextResponse.json({ error: 'Upstream service unavailable' }, { status: 503 })
+  }
+
   try {
     const res = await fetch(
       `${TMDB_API_URL}/genre/movie/list?api_key=${TMDB_API_KEY}&language=en-US`,
@@ -11,26 +23,26 @@ export async function GET() {
     )
 
     if (!res.ok) throw new Error('Failed to fetch genres')
-    
+
     const data = await res.json()
 
     // Keep track of used backdrop paths to avoid duplicates
     const usedBackdrops = new Set<string>();
-    
+
     // Fetch sample movies for each genre to get backdrop images
     const genresWithImages = await Promise.all(
-      data.genres.map(async (genre: any) => {
+      data.genres.map(async (genre: { id: number }) => {
         const moviesRes = await fetch(
           `${TMDB_API_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=${genre.id}&sort_by=popularity.desc&page=1`,
           { next: { revalidate: 86400 } }
         )
         const moviesData = await moviesRes.json();
         const movies = moviesData.results || [];
-        
+
         // Try to find a movie backdrop that hasn't been used yet
         let selectedMovie = null;
         let backdropPath = null;
-        
+
         // Look through the top movies to find one with a unique backdrop
         for (let i = 0; i < Math.min(movies.length, 10); i++) {
           const movie = movies[i];
@@ -41,13 +53,13 @@ export async function GET() {
             break;
           }
         }
-        
+
         // If we couldn't find a unique backdrop, just use the most popular one
         if (!selectedMovie && movies.length > 0) {
           selectedMovie = movies[0];
           backdropPath = selectedMovie.backdrop_path;
         }
-        
+
         return {
           ...genre,
           count: moviesData.total_results,

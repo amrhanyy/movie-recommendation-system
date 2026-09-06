@@ -7,10 +7,9 @@ interface GridItemCardProps {
   item: {
     _id: string;
     itemId: number;
-    userId: string;
     title: string;
     type: 'movie' | 'tv';
-    posterPath: string;
+    posterPath: string | null;
     addedAt: string;
     releaseDate?: string;
     voteAverage?: number;
@@ -51,13 +50,14 @@ export function GridItemCard({ item, onRemove }: GridItemCardProps) {
         )}
         
         <Image
-          src={item.posterPath 
-            ? `https://image.tmdb.org/t/p/w500${item.posterPath}` 
-            : '/placeholder-poster.png'
+          src={item.posterPath
+            ? `https://image.tmdb.org/t/p/w500${item.posterPath}`
+            : '/images/placeholder-poster.png'
           }
           alt={item.title}
           fill
           sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 16vw"
+          loading="lazy"
           quality={85}
           className={`object-cover transform group-hover:scale-105 transition-transform duration-500 z-10 relative ${
             imageLoaded ? 'opacity-100' : 'opacity-0'
@@ -67,11 +67,14 @@ export function GridItemCard({ item, onRemove }: GridItemCardProps) {
         
         {/* Bookmark Button */}
         <button
+          type="button"
           onClick={handleRemoveClick}
+          aria-label={`Remove ${item.title} from Watchlist`}
+          aria-pressed
           className="absolute top-2 right-2 p-2 rounded-full
             bg-black/50 backdrop-blur-sm border border-gray-700/50
             text-cyan-500 hover:bg-black/70 hover:scale-110 hover:border-cyan-500/50 hover:text-cyan-400
-            transition-all duration-300 z-30"
+            transition-all duration-300 z-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
         >
           <Bookmark className="w-4 h-4 fill-current" />
         </button>

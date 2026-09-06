@@ -18,8 +18,8 @@ export default function Avatar({ src, alt, size = 48 }: AvatarProps) {
         alt={alt}
         fill
         className="object-cover"
-        onError={(e: any) => {
-          e.target.src = '/images/placeholder-avatar.png'
+        onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
+          e.currentTarget.src = '/images/placeholder-avatar.png'
         }}
       />
     </div>

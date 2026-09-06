@@ -230,4 +230,24 @@ body {
   animation: fadeInUp 0.3s ease forwards;
 }
 
+/* A7: Respect prefers-reduced-motion — neutralize decorative motion globally.
+   Tailwind's motion-safe: variants already gate the common ones; this is a
+   safety net for any remaining animation/transform. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Functional loading indicators (spinners) are status feedback, not
+     decorative motion — they must stay visible even under reduced motion. */
+  .animate-spin {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
 

@@ -2,6 +2,7 @@
 
 import React, { useEffect } from 'react'
 import { Button } from '../components/ui/button'
+import Link from 'next/link'
 
 export default function Error({
   error,
@@ -11,7 +12,14 @@ export default function Error({
   reset: () => void
 }) {
   useEffect(() => {
-    console.error('Error details:', error)
+    // Log only to the server console (not exposed to the client UI)
+    // Do not log error.message or error.stack in production
+    if (process.env.NODE_ENV === 'development') {
+      console.error('Application error:', error)
+    } else {
+      // In production, log only the digest (a stable, non-sensitive identifier)
+      console.error('Application error, digest:', error.digest || 'unknown')
+    }
   }, [error])
 
   return (
@@ -20,21 +28,16 @@ export default function Error({
         <h2 className="text-2xl font-semibold text-red-400 mb-4">
           Something went wrong!
         </h2>
-        
-        <div className="bg-gray-900 p-4 rounded text-left mb-6 overflow-auto max-h-40">
-          <p className="text-gray-300 font-mono text-sm">
-            {error.message || 'An unexpected error occurred'}
-          </p>
-          {error.stack && (
-            <details className="mt-2">
-              <summary className="text-gray-400 cursor-pointer">Stack trace</summary>
-              <pre className="text-gray-400 text-xs mt-2 overflow-auto">
-                {error.stack}
-              </pre>
-            </details>
+
+        <p className="text-gray-400 mb-6">
+          An unexpected error occurred. Please try again.
+          {error.digest && (
+            <span className="block mt-2 text-xs text-gray-500">
+              Error reference: {error.digest}
+            </span>
           )}
-        </div>
-        
+        </p>
+
         <div className="space-y-4">
           <Button
             onClick={reset}
@@ -42,17 +45,17 @@ export default function Error({
           >
             Try again
           </Button>
-          
+
           <div>
-            <a 
+            <Link
               href="/"
               className="text-blue-400 hover:text-blue-300 block mt-4"
             >
               Return to home page
-            </a>
+            </Link>
           </div>
         </div>
       </div>
     </div>
   )
-} 
+}

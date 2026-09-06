@@ -1,24 +1,33 @@
 import { NextResponse } from "next/server";
-import mongoose from 'mongoose';
-import connectToMongoDB from "@/lib/mongodb";
+import { requireOwner } from "@/lib/security/auth";
 
-const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  preferences: { type: Object }
-});
+/**
+ * POST /api/users
+ *
+ * Previously: public, unauthenticated user creation with a duplicate User schema.
+ * Now: owner-only user administration with strict validation.
+ *
+ * Regular user accounts are created automatically through the authenticated
+ * NextAuth Google sign-in flow (see lib/auth.ts signIn callback).
+ * This route is restricted to owners for administrative user management only.
+ */
 
-const User = mongoose.models.User || mongoose.model('User', userSchema);
-
-export async function POST(req: Request) {
-  await connectToMongoDB();
-  
-  const { email, name, preferences } = await req.json();
-  
-  try {
-    const user = await User.create({ email, name, preferences });
-    return NextResponse.json({ user }, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+export async function POST() {
+  // Require owner-level authentication
+  const authResult = await requireOwner();
+  if (!authResult.ok) {
+    return authResult.response;
   }
+
+  // User creation through this endpoint is intentionally disabled.
+  // Users are created exclusively via the Google OAuth sign-in flow.
+  // If administrative user creation is needed in the future, implement
+  // it with strict validation and a separate User-admin schema.
+  return NextResponse.json(
+    {
+      error:
+        "User creation is handled through Google sign-in. This endpoint is restricted.",
+    },
+    { status: 403 }
+  );
 }

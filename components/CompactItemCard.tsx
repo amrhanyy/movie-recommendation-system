@@ -52,12 +52,14 @@ export function CompactItemCard({ item, onRemove }: CompactItemCardProps) {
         )}
         
         <Image
-          src={item.posterPath 
-            ? `https://image.tmdb.org/t/p/w200${item.posterPath}` 
-            : '/placeholder-poster.png'
+          src={item.posterPath
+            ? `https://image.tmdb.org/t/p/w200${item.posterPath}`
+            : '/images/placeholder-poster.png'
           }
           alt={item.title}
           fill
+          sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 16vw"
+          loading="lazy"
           quality={70}
           className={`object-cover ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
           onLoadingComplete={() => setImageLoaded(true)}

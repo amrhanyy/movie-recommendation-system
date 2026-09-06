@@ -27,15 +27,17 @@ export function useFeatures() {
         setError(null)
 
         const response = await fetch('/api/features')
-        
-        if (!response.ok) {
-          throw new Error('Failed to fetch features')
-        }
+        // Parse body even on 503 (database offline) so client gets the
+        // server-provided fallback { aiAssistant: false } instead of the
+        // stale default { aiAssistant: true }.
+        const data: SystemConfig = await response.json().catch(
+          () => ({ features: { aiAssistant: false } })
+        )
 
-        const data: SystemConfig = await response.json()
-        
-        if (data.features) {
+        if (data?.features) {
           setFeatures(data.features)
+        } else {
+          setFeatures({ aiAssistant: false })
         }
       } catch (err) {
         console.error('Error fetching features:', err)

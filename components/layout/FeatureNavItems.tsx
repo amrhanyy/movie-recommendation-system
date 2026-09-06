@@ -1,5 +1,7 @@
 'use client'
 
+import React from 'react'
+
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
@@ -8,7 +10,14 @@ import { useFeatures } from '@/hooks/useFeatures'
 import { useLanguage } from '@/contexts/LanguageContext'
 
 // Original navItems structure from the layout
-const navItems = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  feature: 'aiAssistant' | null;
+};
+
+const navItems: NavItem[] = [
   { href: '/', label: 'home', icon: Home, feature: null },
   { href: '/trending', label: 'trending', icon: TrendingUp, feature: null },
   { href: '/top-rated', label: 'topRated', icon: TrendingUp, feature: null },
@@ -35,7 +44,7 @@ export function FeatureNavItems() {
         }
         
         // Skip disabled features
-        if (!loading && feature && !isEnabled(feature as any)) {
+        if (!loading && feature && !isEnabled(feature)) {
           return null
         }
         

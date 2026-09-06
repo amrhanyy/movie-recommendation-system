@@ -16,8 +16,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
-.env*
+# env files (R7: all env variants ignored; commit only .env.example)
+.env
+.env.local
+.env.*.local
+env.example.ts
 
 # vercel
 .vercel
@@ -25,3 +28,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# testing
+/coverage/

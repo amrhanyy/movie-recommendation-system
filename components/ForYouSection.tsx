@@ -1,10 +1,11 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useSession, signIn } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import Image from 'next/image'
-import { Sparkles, Loader2, Film, Bookmark } from 'lucide-react'
+import { Sparkles, Film, Bookmark, Tv2 } from 'lucide-react'
+import { useSession } from 'next-auth/react'
+import { useWatchlistContext } from '@/contexts/WatchlistContext'
 
 interface MediaItem {
   id: number
@@ -20,77 +21,21 @@ interface MediaItem {
 
 export function ForYouSection() {
   const { data: session } = useSession()
-  const router = useRouter()
+  const { isInWatchlist, toggleWatchlist } = useWatchlistContext()
   const [recommendations, setRecommendations] = useState<MediaItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [watchlistItems, setWatchlistItems] = useState<Set<number>>(new Set())
   const [needsContent, setNeedsContent] = useState(false)
   const [message, setMessage] = useState("")
   const [error, setError] = useState<string | null>(null)
 
-  const fetchWatchlistStatus = async () => {
-    if (!session?.user?.email) return;
-    try {
-      const response = await fetch('/api/watchlist');
-      if (response.ok) {
-        const data = await response.json();
-        const itemIds = new Set<number>(data
-          .filter((item: { itemId: number }) => typeof item.itemId === 'number')
-          .map((item: { itemId: number }) => item.itemId)
-        );
-        setWatchlistItems(itemIds);
-      }
-    } catch (error) {
-      console.error('Error fetching watchlist status:', error);
-      setWatchlistItems(new Set());
-    }
-  };
-
-  const handleWatchlistToggle = async (item: MediaItem, e: React.MouseEvent) => {
+  const handleWatchlistToggle = (item: MediaItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!session?.user?.email) {
-      signIn();
-      return;
-    }
-
-    try {
-      // Check if item is already in watchlist
-      const isInWatchlist = watchlistItems.has(item.id);
-      
-      if (isInWatchlist) {
-        // If it's in watchlist, remove it
-        const response = await fetch(`/api/watchlist?itemId=${item.id}&type=${item.media_type}`, {
-          method: 'DELETE'
-        });
-        if (!response.ok) throw new Error('Failed to remove from watchlist');
-      } else {
-        // If it's not in watchlist, add it
-        const response = await fetch('/api/watchlist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            itemId: item.id,
-            type: item.media_type,
-            title: item.title || item.name,
-            posterPath: item.poster_path
-          }),
-        });
-        if (!response.ok) throw new Error('Failed to add to watchlist');
-      }
-
-      // Update local state
-      setWatchlistItems(prev => {
-        const newSet = new Set(prev);
-        if (isInWatchlist) {
-          newSet.delete(item.id);
-        } else {
-          newSet.add(item.id);
-        }
-        return newSet;
-      });
-    } catch (error) {
-      console.error('Error toggling watchlist:', error);
-    }
+    void toggleWatchlist({
+      itemId: item.id,
+      type: item.media_type,
+      title: item.title || item.name || '',
+      posterPath: item.poster_path
+    });
   };
 
   useEffect(() => {
@@ -101,16 +46,16 @@ export function ForYouSection() {
         setIsLoading(true)
         setError(null)
         const response = await fetch('/api/ai-recommendations')
-        
+
         if (response.status >= 400) {
           const errorData = await response.json()
           throw new Error(errorData.errorDetails || errorData.error || 'Failed to fetch recommendations')
         }
-        
+
         if (!response.ok) throw new Error('Failed to fetch recommendations')
-        
+
         const data = await response.json()
-        
+
         if (data.needsContent) {
           setNeedsContent(true)
           setMessage(data.message || "Please add movies or TV shows to your Favorites or Watchlist to get personalized recommendations.")
@@ -128,10 +73,6 @@ export function ForYouSection() {
     }
 
     fetchRecommendations()
-    
-    if (session?.user?.email) {
-      fetchWatchlistStatus();
-    }
   }, [session?.user?.email])
 
   if (!session) {
@@ -196,12 +137,11 @@ export function ForYouSection() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+      <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 list-none">
         {recommendations.map((item, index) => (
-          <div
+          <li
             key={`${item.media_type}-${item.id}`}
-            className="group relative"
-            style={{ 
+            style={{
               animationName: 'fadeInUp',
               animationDuration: '0.3s',
               animationTimingFunction: 'ease',
@@ -211,58 +151,70 @@ export function ForYouSection() {
               transform: 'translateY(20px)'
             }}
           >
-            <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-2 
-                          border border-gray-700/50">
-              <Image
-                src={item.poster_path 
-                  ? `https://image.tmdb.org/t/p/w500${item.poster_path}`
-                  : '/placeholder-poster.png'
-                }
-                alt={item.title}
-                fill
-                className="object-cover transition-transform duration-300 group-hover:scale-105"
-              />
-              <button
-                onClick={(e) => handleWatchlistToggle(item, e)}
-                className="absolute top-2 right-2 p-2 rounded-full
-                        bg-black/50 backdrop-blur-sm border border-gray-700/50
-                        text-white hover:bg-black/70 hover:scale-110
-                        transition-all duration-300 z-10"
-              >
-                <Bookmark 
-                  className={`w-4 h-4 ${watchlistItems.has(item.id) ? 'fill-white' : ''}`} 
+            <Link
+              href={`/${item.media_type}/${item.id}`}
+              aria-label={`View details for ${item.title || item.name}`}
+              className="group relative block focus:outline-none"
+            >
+              <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-2
+                        border border-gray-700/50">
+                <Image
+                  src={item.poster_path
+                    ? `https://image.tmdb.org/t/p/w500${item.poster_path}`
+                    : '/images/placeholder-poster.png'
+                  }
+                  alt={item.title}
+                  fill
+                  sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
+                  loading="lazy"
+                  className="object-cover transition-transform duration-300 group-hover:scale-105"
                 />
-              </button>
-              <div 
-                className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent 
-                          opacity-0 group-hover:opacity-100 transition-all duration-300"
-                onClick={() => router.push(`/${item.media_type}/${item.id}`)}
-              >
-                <div className="absolute bottom-0 left-0 right-0 p-4">
-                  <p className="text-white text-sm font-medium mb-1">{item.title}</p>
-                  <div className="flex items-center justify-between">
-                    <span className="text-cyan-400 text-sm">★ {item.vote_average.toFixed(1)}</span>
-                    <span className="text-gray-300 text-xs">
-                      {item.media_type === 'movie' ? '🎬' : '📺'}
-                    </span>
+                <button
+                  type="button"
+                  onClick={(e) => handleWatchlistToggle(item, e)}
+                  aria-pressed={isInWatchlist(item.id)}
+                  aria-label={isInWatchlist(item.id) ? `Remove ${item.title || 'item'} from watchlist` : `Add ${item.title || 'item'} to watchlist`}
+                  className="absolute top-2 right-2 p-2 rounded-full
+                          bg-black/50 backdrop-blur-sm border border-gray-700/50
+                          text-white hover:bg-black/70 hover:scale-110
+                          transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+                >
+                  <Bookmark
+                    className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
+                  />
+                </button>
+                <div
+                  className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent
+                            opacity-0 group-hover:opacity-100 transition-all duration-300"
+                >
+                  <div className="absolute bottom-0 left-0 right-0 p-4">
+                    <p className="text-white text-sm font-medium mb-1">{item.title}</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-cyan-400 text-sm">★ {item.vote_average.toFixed(1)}</span>
+                      <span className="text-gray-300">
+                        {item.media_type === 'movie' ? (
+                          <Film className="w-3.5 h-3.5" aria-hidden="true" />
+                        ) : (
+                          <Tv2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        )}
+                      </span>
+                    </div>
+                    {item.reasoning && (
+                      <p className="text-xs text-gray-300 mt-2 opacity-75">{item.reasoning}</p>
+                    )}
                   </div>
-                  {item.reasoning && (
-                    <p className="text-xs text-gray-300 mt-2 opacity-75">{item.reasoning}</p>
-                  )}
                 </div>
               </div>
-            </div>
-            <div onClick={() => router.push(`/${item.media_type}/${item.id}`)} className="cursor-pointer">
               <h3 className="text-white text-sm line-clamp-1 group-hover:text-cyan-400 transition-colors">
                 {item.title || item.name}
               </h3>
               <p className="text-gray-400 text-xs">
                 {new Date(item.release_date).getFullYear()}
               </p>
-            </div>
-          </div>
+            </Link>
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   )
 }

@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import redisCache from '../../../../lib/cache';
+import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
@@ -9,9 +10,15 @@ interface Params {
 }
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<Params> }
 ) {
+  // Rate limit public TMDB proxy (F-011/F-028)
+  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxy);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
+
   if (!TMDB_API_KEY) {
     console.error('TMDB API key is missing')
     return NextResponse.json(
@@ -26,6 +33,14 @@ export async function GET(
     if (!movieId) {
       return NextResponse.json(
         { error: 'Movie ID is required' },
+        { status: 400 }
+      )
+    }
+
+    // Validate TMDB ID: positive integer (F-033)
+    if (!/^\d{1,8}$/.test(movieId)) {
+      return NextResponse.json(
+        { error: 'Invalid movie ID' },
         { status: 400 }
       )
     }
@@ -79,7 +94,7 @@ export async function GET(
 
           // Find official trailer
           const trailer = videos.results?.find(
-            (video: any) => 
+            (video: { type: string; site: string; official?: boolean }) =>
               video.type === "Trailer" && 
               video.site === "YouTube" &&
               video.official
@@ -98,7 +113,7 @@ export async function GET(
             },
             trailer
           }
-        } catch (fetchError: any) {
+        } catch (fetchError: unknown) {
           console.error('Error fetching data from TMDB:', fetchError);
           throw fetchError;
         }
@@ -108,10 +123,10 @@ export async function GET(
     );
 
     return NextResponse.json(combinedData)
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Movie details error:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to load movie details' },
+      { error: 'Failed to load movie details' },
       { status: 500 }
     )
   }

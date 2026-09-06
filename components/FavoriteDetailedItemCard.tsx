@@ -79,12 +79,14 @@ export function FavoriteDetailedItemCard({ item, onRemove }: FavoriteDetailedIte
         )}
         
         <Image
-          src={item.posterPath 
-            ? `https://image.tmdb.org/t/p/w500${item.posterPath}` 
-            : '/placeholder-poster.png'
+          src={item.posterPath
+            ? `https://image.tmdb.org/t/p/w500${item.posterPath}`
+            : '/images/placeholder-poster.png'
           }
           alt={item.title}
           fill
+          sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 16vw"
+          loading="lazy"
           quality={80}
           className={`object-cover transition-all duration-300 group-hover:scale-105 ${
             imageLoaded ? 'opacity-100' : 'opacity-0'

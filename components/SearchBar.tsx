@@ -56,7 +56,7 @@ export function SearchBar() {
 
   // Add hotkey (/ key) to focus search
   useEffect(() => {
-    const handleHotkey = (e: KeyboardEvent) => {
+    const handleHotkey = (e: globalThis.KeyboardEvent) => {
       // Focus search when / is pressed, unless in another input/textarea
       if (
         e.key === '/' && 
@@ -68,8 +68,8 @@ export function SearchBar() {
       }
     };
     
-    document.addEventListener('keydown', handleHotkey as any);
-    return () => document.removeEventListener('keydown', handleHotkey as any);
+    document.addEventListener('keydown', handleHotkey);
+    return () => document.removeEventListener('keydown', handleHotkey);
   }, []);
 
   useEffect(() => {
@@ -179,6 +179,8 @@ export function SearchBar() {
         <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300 ${isFocused ? 'text-cyan-400' : 'text-gray-400'}`} />
         <input
           ref={inputRef}
+          id="global-search"
+          name="search"
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -187,6 +189,7 @@ export function SearchBar() {
             setIsFocused(true);
             setIsOpen(true);
           }}
+          aria-label="Search movies, TV shows, and celebrities"
           placeholder={`${t('search')}... (Press / to focus)`}
           className="w-full h-12 pl-11 pr-14 bg-gray-800/50 text-white rounded-xl 
                      focus:outline-none focus:ring-2 focus:ring-cyan-500/50 
@@ -275,7 +278,7 @@ export function SearchBar() {
             ) : (
               // No results
               <div className="p-4 text-center text-gray-400">
-                <p>No results found for "{query}"</p>
+                <p>No results found for &quot;{query}&quot;</p>
               </div>
             )
           ) : (

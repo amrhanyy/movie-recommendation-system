@@ -1,9 +1,10 @@
 "use client"
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, type KeyboardEvent } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
+import { SafeMarkdown } from "@/lib/ai-markdown"
 
 type Message = {
   text: string
@@ -27,8 +28,6 @@ export function ChatAssistant() {
     const trimmedInput = input.trim()
     if (!trimmedInput || isLoading) return
 
-    console.log('Sending message:', trimmedInput);
-
     const userMessage: Message = { 
       text: trimmedInput, 
       isUser: true,
@@ -41,39 +40,33 @@ export function ChatAssistant() {
     setError("")
 
     try {
-      console.log('Making fetch request to /api/chat');
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: trimmedInput }),
       })
 
-      console.log('Response status:', response.status);
-      const data = await response.json()
-      console.log('Response data:', data);
-
-      if (!response.ok) {
-        throw new Error(data.error || `Server error: ${response.status}`)
+      let data: { response?: unknown; error?: unknown } = {}
+      try {
+        data = await response.json() as { response?: unknown; error?: unknown }
+      } catch {
+        throw new Error('invalid')
       }
 
-      if (!data.response) {
-        throw new Error('No response received from server')
+      if (!response.ok || typeof data.response !== 'string') {
+        throw new Error('failed')
       }
 
+      const assistantText = data.response
       setMessages(prev => [...prev, {
-        text: data.response,
+        text: assistantText,
         isUser: false,
         timestamp: Date.now()
       }])
-    } catch (error) {
-      console.error('Chat error:', error);
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : "Something went wrong. Please try again."
-      
-      setError(errorMessage)
+    } catch {
+      setError("Something went wrong. Please try again.")
       setMessages(prev => [...prev, {
-        text: `Error: ${errorMessage}`,
+        text: "Sorry, I encountered an unexpected error. Please try again later.",
         isUser: false,
         timestamp: Date.now()
       }])
@@ -82,7 +75,7 @@ export function ChatAssistant() {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -110,7 +103,9 @@ export function ChatAssistant() {
                   : "bg-gray-800 text-gray-300 shadow-md"
               }`}
             >
-              {message.text}
+              {message.isUser
+                ? message.text
+                : <SafeMarkdown content={message.text} />}
             </div>
           </div>
         ))}

@@ -1,13 +1,17 @@
 'use client'
 import React, { useState } from 'react'
+import { isValidYouTubeVideoId } from '@/lib/ai-security'
+import { SafeYouTubeEmbed } from '@/components/SafeYouTubeEmbed'
 
 interface TVShowTrailerProps {
     tvShowId: string;
     initialTrailerKey?: string;
 }
 
-const TVShowTrailer = ({ tvShowId, initialTrailerKey }: TVShowTrailerProps) => {
-    const [trailerKey] = useState(initialTrailerKey);
+const TVShowTrailer = ({ initialTrailerKey }: TVShowTrailerProps) => {
+    const [trailerKey] = useState<string | null>(
+        isValidYouTubeVideoId(initialTrailerKey) ? initialTrailerKey : null
+    );
 
     if (!trailerKey) {
         return (
@@ -17,18 +21,24 @@ const TVShowTrailer = ({ tvShowId, initialTrailerKey }: TVShowTrailerProps) => {
         );
     }
 
-    return (
-        <div className="w-full aspect-video">
-            <iframe
-                className="w-full h-[400px] rounded-xl"
-                src={`https://www.youtube.com/embed/${trailerKey}`}
-                title="TV Show Trailer"
-                frameBorder="0"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-            ></iframe>
-        </div>
+    const embed = (
+        <SafeYouTubeEmbed
+            videoId={trailerKey}
+            title="TV Show Trailer"
+            className="w-full aspect-video"
+            iframeClassName="w-full h-[400px] rounded-xl"
+        />
     );
+
+    if (!embed) {
+        return (
+            <div className="w-full h-[400px] flex items-center justify-center bg-gray-900 rounded-xl">
+                <p className="text-gray-400">No trailer available</p>
+            </div>
+        );
+    }
+
+    return embed;
 };
 
 export default TVShowTrailer;

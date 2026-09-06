@@ -14,12 +14,14 @@ import { FavoriteCompactItemCard } from '@/components/FavoriteCompactItemCard'
 
 interface FavoriteItem {
   id: string
+  _id?: string
   itemId: number
   userId: string
   title: string
   type: 'movie' | 'tv'
   posterPath: string | null
   createdAt: string
+  addedAt?: string
   voteAverage?: number
   releaseDate?: string
   runtime?: number
@@ -35,8 +37,6 @@ interface SortOption {
 const sortOptions: SortOption[] = [
   { label: 'Date added', value: 'added_date' },
   { label: 'Alphabetical', value: 'title' },
-  { label: 'Rating', value: 'vote_average' },
-  { label: 'Release date', value: 'release_date' },
 ]
 
 type ViewMode = 'grid' | 'detailed' | 'compact'
@@ -70,24 +70,25 @@ export default function FavoritesPage() {
     async function fetchFavorites() {
       try {
         setIsLoading(true)
-        // Try enhanced details API first if it exists
-        let response = await fetch('/api/favorites/enhanced-details')
-        
-        // Fall back to basic favorites API
-        if (!response.ok) {
-          console.warn('Enhanced details API failed, falling back to basic favorites')
-          response = await fetch('/api/favorites')
-          if (!response.ok) throw new Error('Failed to fetch favorites')
-        }
-        
+        // /api/favorites returns the stored favorite items (title, type,
+        // posterPath, createdAt). It does not carry TMDB detail fields, so the
+        // sort controls are limited to criteria backed by real data
+        // (date added, title) — see sortOptions.
+        const response = await fetch('/api/favorites')
+        if (!response.ok) throw new Error('Failed to fetch favorites')
+
         const data = await response.json()
-        
-        // Transform the data if needed to match the expected format
-        const formattedData = data.map((item: any) => ({
-          ...item,
-          createdAt: item.createdAt || item.addedAt // Handle both formats
-        }))
-        
+
+        // Normalize: map stored createdAt onto the addedAt field the sort and
+        // card code expect. createdAt is always present from the model.
+        const formattedData = (Array.isArray(data) ? data : []).map(
+          (item: FavoriteItem) => ({
+            ...item,
+            id: item.id ?? item._id ?? '',
+            createdAt: item.createdAt || item.addedAt || '',
+          })
+        )
+
         setFavorites(formattedData)
       } catch (error) {
         console.error('Error:', error)
@@ -161,19 +162,11 @@ export default function FavoritesPage() {
     // Then sort the filtered items
     return [...filteredItems].sort((a, b) => {
       const direction = isAscending ? 1 : -1
-      
+
       switch (sortBy) {
         case 'title':
           return direction * a.title.localeCompare(b.title)
-          
-        case 'vote_average':
-          return direction * ((a.voteAverage || 0) - (b.voteAverage || 0))
-          
-        case 'release_date':
-          const dateA = a.releaseDate ? new Date(a.releaseDate).getTime() : 0
-          const dateB = b.releaseDate ? new Date(b.releaseDate).getTime() : 0
-          return direction * (dateA - dateB)
-          
+
         case 'added_date':
         default:
           return direction * (

@@ -1,36 +1,54 @@
-import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import connectToMongoDB from '@/lib/mongodb';
-import { ChatHistory } from '@/lib/models/ChatHistory';
+import { NextResponse } from "next/server";
+import { requireSession } from "@/lib/security/auth";
+import { objectIdSchema } from "@/lib/security/schemas";
+import connectToMongoDB from "@/lib/mongodb";
+import { ChatHistory } from "@/lib/models/ChatHistory";
+import { chatCutoffDate } from "@/lib/privacy-retention";
 
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireSession();
+    if (!authResult.ok) {
+      return authResult.response;
     }
 
     const { id } = await params;
 
+    // Validate ObjectId format
+    const idResult = objectIdSchema.safeParse(id);
+    if (!idResult.success) {
+      return NextResponse.json(
+        { error: "Invalid chat ID" },
+        { status: 400 }
+      );
+    }
+
     await connectToMongoDB();
-    
+
+    // Ownership enforced: userId filter from session. Retention-filtered:
+    // an expired chat returns 404 like a missing one (no content leak).
     const chat = await ChatHistory.findOne({
       _id: id,
-      userId: session.user.email
+      userId: authResult.user.email,
+      updatedAt: { $gte: chatCutoffDate() },
     }).lean();
 
     if (!chat) {
-      return NextResponse.json({ error: 'Chat not found' }, { status: 404 });
+      return NextResponse.json(
+        { error: "Chat not found" },
+        { status: 404 }
+      );
     }
 
     return NextResponse.json(chat);
-  } catch (error) {
-    console.error('Chat History GET error:', error);
-    return NextResponse.json({ error: 'Failed to fetch chat' }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to fetch chat" },
+      { status: 500 }
+    );
   }
 }
 
@@ -39,23 +57,34 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireSession();
+    if (!authResult.ok) {
+      return authResult.response;
     }
 
     const { id } = await params;
 
+    const idResult = objectIdSchema.safeParse(id);
+    if (!idResult.success) {
+      return NextResponse.json(
+        { error: "Invalid chat ID" },
+        { status: 400 }
+      );
+    }
+
     await connectToMongoDB();
-    
+
+    // Ownership enforced: userId filter from session
     await ChatHistory.findOneAndDelete({
       _id: id,
-      userId: session.user.email
+      userId: authResult.user.email,
     });
 
-    return NextResponse.json({ message: 'Chat deleted successfully' });
-  } catch (error) {
-    console.error('Chat History DELETE error:', error);
-    return NextResponse.json({ error: 'Failed to delete chat' }, { status: 500 });
+    return NextResponse.json({ message: "Chat deleted successfully" });
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to delete chat" },
+      { status: 500 }
+    );
   }
 }

@@ -93,7 +93,7 @@ export function Favorites({ limit }: FavoritesProps) {
               <Image
                 src={item.posterPath 
                   ? `https://image.tmdb.org/t/p/w500${item.posterPath}`
-                  : '/placeholder-poster.png'
+                  : '/images/placeholder-poster.png'
                 }
                 alt={item.title}
                 fill

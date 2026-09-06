@@ -19,7 +19,7 @@ export function useFavorites(itemId: number, type: 'movie' | 'tv', title: string
         if (!response.ok) throw new Error('Failed to fetch favorites');
         
         const items = await response.json();
-        setIsFavorite(items.some((item: any) => 
+        setIsFavorite(items.some((item: { itemId: number; type: string }) =>
           item.itemId === itemId && item.type === type
         ));
       } catch (error) {

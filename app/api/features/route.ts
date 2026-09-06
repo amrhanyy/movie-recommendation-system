@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import connectToMongoDB from '@/lib/mongodb'
 import mongoose from 'mongoose'
 
@@ -27,7 +27,7 @@ const DEFAULT_CONFIG: FeatureSettings = {
   }
 };
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     // Connect to database
     await connectToMongoDB();
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     }
     
     // Cast the document to our interface and handle any missing properties
-    const settings: Partial<FeatureSettings> = rawSettings as any;
+    const settings: Partial<FeatureSettings> = rawSettings as unknown as Partial<FeatureSettings>;
     
     // Return settings with fallbacks to default values if properties are missing
     return NextResponse.json({
@@ -50,9 +50,19 @@ export async function GET(request: NextRequest) {
         aiAssistant: settings.features?.aiAssistant ?? DEFAULT_CONFIG.features.aiAssistant,
       }
     });
-  } catch (error) {
-    console.error('Features API error:', error);
-    // If there's an error, return default config
-    return NextResponse.json(DEFAULT_CONFIG);
+  } catch {
+    // Log without the error object: never surface stack traces/DB details
+    // to stdout/stderr (L-02 + no-PII logging policy).
+    console.error('Features API error: database unavailable or misconfigured');
+    // L-02: fail closed. On database failure, report 503 and force
+    // aiAssistant to false so clients cannot read a stale "enabled" flag.
+    return NextResponse.json(
+      {
+        features: {
+          aiAssistant: false,
+        },
+      },
+      { status: 503 }
+    );
   }
 } 

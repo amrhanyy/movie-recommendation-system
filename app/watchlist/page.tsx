@@ -21,6 +21,7 @@ interface WatchlistItem {
   type: 'movie' | 'tv'
   posterPath: string
   addedAt: string
+  createdAt?: string
   releaseDate?: string
   popularity?: number
   runtime?: number
@@ -75,24 +76,24 @@ export default function WatchlistPage() {
     async function fetchWatchlist() {
       try {
         setIsLoading(true)
-        // Try to use the enhanced API first, fall back to the basic API if it fails
-        let response = await fetch('/api/watchlist/enhanced-details')
-        
-        // If enhanced details fail, fall back to basic watchlist
-        if (!response.ok) {
-          console.warn('Enhanced details API failed, falling back to basic watchlist')
-          response = await fetch('/api/watchlist')
-          if (!response.ok) throw new Error('Failed to fetch watchlist')
-        }
-        
+        // Use the cached, enriched details route (Phase 2). It returns the
+        // stored item fields plus voteAverage / releaseDate / runtime so the
+        // sort controls below operate on real values.
+        const response = await fetch('/api/watchlist/details')
+        if (!response.ok) throw new Error('Failed to fetch watchlist')
+
         const data = await response.json()
-        
-        // Transform the data if needed to match the expected format
-        const formattedData = data.map((item: any) => ({
-          ...item,
-          addedAt: item.addedAt || item.createdAt, // Handle both formats
-        }))
-        
+
+        // Normalize: the details route returns the stored items (addedAt/
+        // createdAt) enriched with TMDB detail fields when available.
+        // createdAt is always present from the model.
+        const formattedData = (Array.isArray(data) ? data : []).map(
+          (item: WatchlistItem) => ({
+            ...item,
+            addedAt: item.addedAt || item.createdAt || '',
+          })
+        )
+
         setItems(formattedData)
       } catch (error) {
         console.error('Error:', error)

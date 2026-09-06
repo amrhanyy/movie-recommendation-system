@@ -92,6 +92,7 @@ const config: Config = {
   	}
   },
   plugins: [
+    // Tailwind plugins are CommonJS modules; require() is the standard Node syntax here.
     require("tailwindcss-animate"),
     require("@tailwindcss/typography")
   ],
