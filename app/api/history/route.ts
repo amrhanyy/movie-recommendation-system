@@ -5,6 +5,7 @@ import { historyItemSchema } from "@/lib/security/schemas";
 import connectToMongoDB from "@/lib/mongodb";
 import { History } from "@/lib/models/History";
 import { historyCutoffDate } from "@/lib/privacy-retention";
+import { trimCollection } from "@/lib/security/cardinality";
 
 /**
  * Whether viewing-history collection is currently enabled for the user.
@@ -123,6 +124,9 @@ export async function POST(request: NextRequest) {
       },
       { upsert: true, new: true }
     );
+
+    // W3-006b: trim history to keep newest 2000
+    await trimCollection(History, { userId: ctx.email, maxCount: 2000, sortField: 'viewedAt' });
 
     return NextResponse.json(result);
   } catch {

@@ -74,17 +74,17 @@ export async function POST(request: NextRequest) {
 
     await connectToMongoDB();
 
-    // M-05: enforce list capacity before writing
-    const existing = await WatchlistModel.countDocuments({
+    const existingCount = await WatchlistModel.countDocuments({
       userId: authResult.user.email,
     });
-    const isNewItem =
-      !(await WatchlistModel.exists({
-        userId: authResult.user.email,
-        itemId: parseResult.data.itemId,
-        type: parseResult.data.type,
-      }));
-    if (isNewItem && existing >= MAX_LIST_ITEMS) {
+    const isNewItem = !(await WatchlistModel.exists({
+      userId: authResult.user.email,
+      itemId: parseResult.data.itemId,
+      type: parseResult.data.type,
+    }));
+
+    // Pre-check: reject if at cap and new item
+    if (isNewItem && existingCount >= MAX_LIST_ITEMS) {
       return NextResponse.json(
         {
           error: `Watchlist is full (maximum ${MAX_LIST_ITEMS} items). Remove an item before adding a new one.`,
@@ -108,6 +108,24 @@ export async function POST(request: NextRequest) {
       },
       { upsert: true, new: true }
     );
+
+    // W3-005: atomic list cap with rollback — if fresh insert pushed count over 500,
+    // delete the inserted doc and return 400. Re-adds of existing items are unaffected.
+    const isUpsert = !!(item as Record<string, unknown>).upserted;
+    if (isUpsert) {
+      const countAfter = await WatchlistModel.countDocuments({ userId: authResult.user.email });
+      if (countAfter > MAX_LIST_ITEMS) {
+        await WatchlistModel.deleteOne({
+          userId: authResult.user.email,
+          itemId: parseResult.data.itemId,
+          type: parseResult.data.type,
+        });
+        return NextResponse.json(
+          { error: `Watchlist limit reached (maximum ${MAX_LIST_ITEMS})` },
+          { status: 400 }
+        );
+      }
+    }
 
     return NextResponse.json(item);
   } catch {

@@ -16,6 +16,12 @@ const mocks = vi.hoisted(() => ({
   favoritesFind: vi.fn(),
   countDocuments: vi.fn(),
   aggregate: vi.fn(),
+  consumeQuota: vi.fn().mockResolvedValue({ allowed: true }),
+  chatHistoryCreate: vi.fn(),
+  trimCollection: vi.fn(),
+  usageQuotaUpdate: vi.fn(),
+  findOne: vi.fn(),
+  findOneAndUpdate: vi.fn(),
 }));
 
 function chain(findFn: ReturnType<typeof vi.fn>) {
@@ -68,6 +74,21 @@ vi.mock('@/lib/models/WatchlistModel', () => ({
 vi.mock('@/lib/models/FavoritesModel', () => ({
   FavoritesModel: { find: mocks.favoritesFind },
 }));
+vi.mock('@/lib/models/ChatHistory', () => ({
+  ChatHistory: {
+    findOne: mocks.findOne,
+    findOneAndUpdate: mocks.findOneAndUpdate,
+    create: mocks.chatHistoryCreate,
+  },
+}));
+vi.mock('@/lib/models/UsageQuota', () => ({
+  UsageQuota: {
+    findOneAndUpdate: mocks.usageQuotaUpdate,
+  },
+}));
+vi.mock('@/lib/security/cardinality', () => ({
+  trimCollection: mocks.trimCollection,
+}));
 vi.mock('@/lib/cache', () => ({
   default: {
     getOrSet: vi.fn(async (_k: string, fn: () => unknown) => fn()),
@@ -93,6 +114,10 @@ vi.mock('@/lib/cacheManager', () => ({
       status: 'offline',
     }),
   },
+}));
+
+vi.mock('@/lib/security/quota', () => ({
+  consumeQuota: mocks.consumeQuota,
 }));
 
 vi.mock('@/lib/models/User', () => ({
@@ -174,6 +199,10 @@ describe('POST /api/chat (F-005)', () => {
     mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
+    mocks.consumeQuota.mockReset().mockResolvedValue({ allowed: true });
+    mocks.usageQuotaUpdate.mockReset().mockResolvedValue({ chats: 1, expiresAt: new Date() });
+    mocks.chatHistoryCreate.mockReset().mockResolvedValue({ _id: '507f1f77bcf86cd799439011' });
+    mocks.trimCollection.mockReset();
   });
 
   it('unauthenticated returns 401 before fetch is called', async () => {
@@ -202,10 +231,13 @@ describe('POST /api/chat (F-005)', () => {
       })
     );
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBeDefined();
   });
 
   it('oversized previousMessages array is rejected before fetch', async () => {
     mocks.requireUser.mockResolvedValue(allow());
+    mocks.consumeQuota.mockReset().mockResolvedValue({ allowed: true });
     vi.resetModules();
     const { POST } = await import('@/app/api/chat/route.ts');
     const prev = Array.from({ length: 21 }, () => ({ role: 'user', content: 'hi' }));
@@ -216,6 +248,8 @@ describe('POST /api/chat (F-005)', () => {
       })
     );
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBeDefined();
   });
 
   it('rate-limited request returns 429 with Retry-After', async () => {

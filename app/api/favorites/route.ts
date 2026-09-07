@@ -74,17 +74,17 @@ export async function POST(request: NextRequest) {
 
     await connectToMongoDB();
 
-    // M-05: enforce list capacity before writing
-    const existing = await FavoritesModel.countDocuments({
+    const existingCount = await FavoritesModel.countDocuments({
       userId: authResult.user.email,
     });
-    const isNewItem =
-      !(await FavoritesModel.exists({
-        userId: authResult.user.email,
-        itemId: parseResult.data.itemId,
-        type: parseResult.data.type,
-      }));
-    if (isNewItem && existing >= MAX_LIST_ITEMS) {
+    const isNewItem = !(await FavoritesModel.exists({
+      userId: authResult.user.email,
+      itemId: parseResult.data.itemId,
+      type: parseResult.data.type,
+    }));
+
+    // Pre-check: reject if at cap and new item
+    if (isNewItem && existingCount >= MAX_LIST_ITEMS) {
       return NextResponse.json(
         {
           error: `Favorites list is full (maximum ${MAX_LIST_ITEMS} items). Remove an item before adding a new one.`,
@@ -107,6 +107,24 @@ export async function POST(request: NextRequest) {
       },
       { upsert: true, new: true }
     );
+
+    // W3-005: atomic list cap with rollback — if fresh insert pushed count over 500,
+    // delete the inserted doc and return 400. Re-adds of existing items are unaffected.
+    const isUpsert = !!(favorite as Record<string, unknown>).upserted;
+    if (isUpsert) {
+      const countAfter = await FavoritesModel.countDocuments({ userId: authResult.user.email });
+      if (countAfter > MAX_LIST_ITEMS) {
+        await FavoritesModel.deleteOne({
+          userId: authResult.user.email,
+          itemId: parseResult.data.itemId,
+          type: parseResult.data.type,
+        });
+        return NextResponse.json(
+          { error: `Favorites list limit reached (maximum ${MAX_LIST_ITEMS})` },
+          { status: 400 }
+        );
+      }
+    }
 
     return NextResponse.json(favorite);
   } catch {

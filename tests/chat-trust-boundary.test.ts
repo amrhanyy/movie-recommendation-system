@@ -5,11 +5,13 @@ const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
   assertSameOriginOrReject: vi.fn(),
   applyRateLimitUser: vi.fn(),
+  consumeQuota: vi.fn(),
   fetch: vi.fn(),
   findOne: vi.fn(),
   findOneAndUpdate: vi.fn(),
   create: vi.fn(),
   lean: vi.fn(),
+  usageQuotaUpdate: vi.fn(),
 }));
 
 vi.mock('@/lib/mongodb', () => ({
@@ -27,12 +29,24 @@ vi.mock('@/lib/security/rateLimit', () => ({
   RATE_LIMITS: { chat: {}, chatHistoryWrite: {} },
 }));
 
+vi.mock('@/lib/security/quota', () => ({
+  consumeQuota: mocks.consumeQuota,
+}));
+vi.mock('@/lib/models/UsageQuota', () => ({
+  UsageQuota: {
+    findOneAndUpdate: mocks.usageQuotaUpdate,
+  },
+}));
+
 vi.mock('@/lib/models/ChatHistory', () => ({
   ChatHistory: {
     findOne: mocks.findOne,
     findOneAndUpdate: mocks.findOneAndUpdate,
     create: mocks.create,
   },
+}));
+vi.mock('@/lib/security/cardinality', () => ({
+  trimCollection: vi.fn(),
 }));
 
 function denied(status: number, error: string) {
@@ -60,6 +74,8 @@ describe('R5 chat trust boundary', () => {
     mocks.requireUser.mockReset();
     mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
+    mocks.consumeQuota.mockReset().mockResolvedValue({ allowed: true });
+    mocks.usageQuotaUpdate.mockReset().mockResolvedValue({ chats: 1, expiresAt: new Date() });
     mocks.fetch.mockReset();
     mocks.findOne.mockReset();
     mocks.findOneAndUpdate.mockReset().mockResolvedValue({});

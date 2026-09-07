@@ -7,6 +7,8 @@ import {
 import connectToMongoDB from "@/lib/mongodb";
 import { ChatHistory } from "@/lib/models/ChatHistory";
 import { chatRequestSchema } from "@/lib/security/schemas";
+import { consumeQuota } from "@/lib/security/quota";
+import { trimCollection } from "@/lib/security/cardinality";
 import {
   AIUpstreamError,
   extractGeminiText,
@@ -148,6 +150,15 @@ export async function POST(request: NextRequest) {
       return rateLimitResponse;
     }
 
+    // W3-006a: daily chat quota (50 per day)
+    const quotaResult = await consumeQuota(userId, 'chats', 50);
+    if (!quotaResult.allowed) {
+      return NextResponse.json(
+        { error: "Daily chat limit reached", retryAfterSeconds: quotaResult.retryAfterSeconds },
+        { status: 429 }
+      );
+    }
+
     let data: unknown;
     try {
       data = await request.json();
@@ -221,6 +232,9 @@ export async function POST(request: NextRequest) {
       });
       persistedChatId = String(created._id);
     }
+
+    // W3-006b: trim chats to keep newest 100
+    await trimCollection(ChatHistory, { userId, maxCount: 100, sortField: 'updatedAt' });
 
     return NextResponse.json({
       response: responseText,

@@ -5,6 +5,10 @@ import connectToMongoDB from '@/lib/mongodb';
 import { History } from '@/lib/models/History';
 import { WatchlistModel } from '@/lib/models/WatchlistModel';
 import { FavoritesModel } from '@/lib/models/FavoritesModel';
+import { redisCache } from '@/lib/cache';
+import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace';
+import { createHash } from 'node:crypto';
+import { consumeQuota } from '@/lib/security/quota';
 import {
   AIUpstreamError,
   extractGeminiText,
@@ -182,6 +186,33 @@ export async function GET(request: NextRequest) {
       }
     });
 
+    // W3-006c: compute content hash for cache key
+    const sortedItems = [...userContentItems]
+      .sort((a, b) => a.title.localeCompare(b.title))
+      .map(item => `${item.type}:${item.title}`)
+      .join('|');
+    const snapshotHash = createHash('sha256')
+      .update(`${authResult.user.email}|${sortedItems}`)
+      .digest('hex')
+      .slice(0, 16);
+
+    const cacheKey = buildCacheKey(CACHE_SCOPES.userRecommendations, `recs:${snapshotHash}`);
+
+    // Check cache first
+    const cached = await redisCache.get(cacheKey);
+    if (cached) {
+      return NextResponse.json(cached);
+    }
+
+    // W3-006a: daily recs quota (20 per day) - only on cache miss
+    const quotaResult = await consumeQuota(authResult.user.email, 'recs', 20);
+    if (!quotaResult.allowed) {
+      return NextResponse.json(
+        { error: "Daily recommendation limit reached", retryAfterSeconds: quotaResult.retryAfterSeconds },
+        { status: 429 }
+      );
+    }
+
     // Prepare user preferences for AI (minimized: titles/types only, no dates)
     const preferences = {
       watchHistory: history.map(h => ({
@@ -281,54 +312,56 @@ export async function GET(request: NextRequest) {
       return true;
     });
 
-    // Fetch detailed info from TMDB for each recommendation
-    const detailedRecommendations = await Promise.all(
-      filteredSuggestions.map(async (suggestion: {
-        title: string;
-        confidence?: number;
-        "sub-genre"?: string;
-        type?: string;
-      }) => {
-        try {
-          const searchResponse = await fetch(
-            `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(suggestion.title)}`
-          );
-          const searchData = await searchResponse.json();
+    // W3-006c: bounded concurrency for TMDB enrichment (max 4 in-flight)
+    const concurrentLimit = 4;
+    const detailedRecommendations: Array<{ id: number; title: string; release_date?: string; poster_path?: string; vote_average?: number; media_type: string; confidence_score: number } | null> = [];
 
-          if (!searchData.results || searchData.results.length === 0) {
+    for (let i = 0; i < filteredSuggestions.length; i += concurrentLimit) {
+      const batch = filteredSuggestions.slice(i, i + concurrentLimit);
+      const batchResults = await Promise.all(
+        batch.map(async (suggestion) => {
+          try {
+            const searchResponse = await fetch(
+              `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(suggestion.title)}`
+            );
+            const searchData = await searchResponse.json();
+
+            if (!searchData.results || searchData.results.length === 0) {
+              return null;
+            }
+
+            const match = searchData.results[0];
+            const matchTitle = match.title || match.name || '';
+
+            // Final check to ensure this title isn't in user's content
+            for (const item of userContentItems) {
+              if (isTitleSimilar(matchTitle, item.title)) {
+                return null;
+              }
+
+              // Also check TMDB ID if available
+              if (item.id && item.id === match.id) {
+                return null;
+              }
+            }
+
+            return {
+              id: match.id,
+              title: matchTitle,
+              release_date: match.release_date || match.first_air_date,
+              poster_path: match.poster_path,
+              vote_average: match.vote_average,
+              media_type: match.media_type,
+              confidence_score: suggestion.confidence || 1,
+            };
+          } catch {
+            console.error('TMDB lookup failed');
             return null;
           }
-
-          const match = searchData.results[0];
-          const matchTitle = match.title || match.name || '';
-
-          // Final check to ensure this title isn't in user's content
-          for (const item of userContentItems) {
-            if (isTitleSimilar(matchTitle, item.title)) {
-              return null;
-            }
-
-            // Also check TMDB ID if available
-            if (item.id && item.id === match.id) {
-              return null;
-            }
-          }
-
-          return {
-            id: match.id,
-            title: matchTitle,
-            release_date: match.release_date || match.first_air_date,
-            poster_path: match.poster_path,
-            vote_average: match.vote_average,
-            media_type: match.media_type,
-            confidence_score: suggestion.confidence || 1,
-          };
-        } catch {
-          console.error('TMDB lookup failed');
-          return null;
-        }
-      })
-    );
+        })
+      );
+      detailedRecommendations.push(...batchResults);
+    }
 
     // Filter out null values and remove duplicates based on TMDB ID
     const uniqueItemsMap = new Map();
@@ -454,10 +487,15 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    return NextResponse.json({
+    const result = {
       recommendations: finalRecommendations,
       needsContent: false
-    });
+    };
+
+    // W3-006c: store in cache with TTL 3600s
+    redisCache.set(cacheKey, result, 3600).catch(() => {});
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error('Recommendation error');
 
