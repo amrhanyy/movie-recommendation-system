@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession } from '@/lib/security/auth';
+import { requireUser } from '@/lib/security/auth';
 import {
   applyRateLimitUser,
   RATE_LIMITS,
@@ -10,6 +10,7 @@ import {
   extractGeminiText,
   mapAIError,
   parseAISimilarMoviesFromText,
+  redactSensitive,
 } from '@/lib/ai-security';
 import {
   buildSimilarMoviesGeminiPayload,
@@ -55,7 +56,7 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
       if (!response.ok) {
         let errorData = '<unreadable>';
         try {
-          errorData = (await response.text()).slice(0, 500);
+          errorData = redactSensitive((await response.text()).slice(0, 500));
         } catch {
           // ignore body-read failures
         }
@@ -119,7 +120,7 @@ export async function GET(
 ) {
   try {
     // Require authenticated session — no unauthenticated Gemini access (F-006 fix)
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

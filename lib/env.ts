@@ -20,6 +20,7 @@
  */
 
 import { z } from "zod";
+import { BlockList } from "node:net";
 import { buildRedisConfig } from "@/lib/redis-config";
 import {
   MIN_RETENTION_DAYS,
@@ -106,73 +107,118 @@ function isMongoUri(value: string): boolean {
 }
 
 /**
- * Parse TRUSTED_PROXY_CIDRS (comma-separated IPv4 CIDRs) into prefix groups.
- * Invalid entries are ignored (never throw). An empty/undefined config yields
- * an empty list, which means "no proxy is trusted".
+ * Trusted-proxy allowlist entry: a node:net BlockList rule plus its source
+ * family for membership tests. The BlockList holds the parsed rule; `type`
+ * records whether the CIDR/range was IPv4 or IPv6 so `ipInCidrList` can query
+ * the list per family without re-parsing.
  */
-function parseTrustedProxyCidrs(
-  raw: string | undefined
-): { network: string[]; mask: number }[] {
-  if (!raw) return [];
-  const out: { network: string[]; mask: number }[] = [];
-  for (const part of raw.split(",")) {
-    const entry = part.trim();
-    if (!entry) continue;
-    const [addr, maskPart] = entry.split("/");
-    const octets = (addr ?? "").split(".");
-    if (octets.length !== 4) continue;
-    const nums = octets.map(Number);
-    if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) continue;
-    const mask = maskPart === undefined ? 32 : Number(maskPart);
-    if (!Number.isInteger(mask) || mask < 0 || mask > 32) continue;
-    out.push({
-      network: nums.slice(0, 3).map((n) => n.toString(16).padStart(2, "0")),
-      mask,
-    });
+export interface TrustedProxyEntry {
+  family: "ipv4" | "ipv6";
+  /** Normalized "address/prefix" (bare IPs become /32 or /128). */
+  cidr: string;
+}
+
+/**
+ * Parse TRUSTED_PROXY_CIDRS (comma-separated IPv4/IPv6 CIDRs or bare IPs)
+ * into memoized BlockList rules.
+ *
+ * - Bare IPs are accepted (/32 IPv4, /128 IPv6).
+ * - Invalid entries are ignored (never throw). Empty/undefined config yields
+ *   an empty list, meaning "no proxy is trusted".
+ * - `/0` and `::/0` are rejected (never trusted): a universal allowlist would
+ *   make the leftmost attacker-controlled XFF hop the rate-limit identity.
+ */
+const trustedProxyParseCache = new Map<string, TrustedProxyEntry[]>();
+export const MAX_TRUSTED_PROXY_ENTRIES = 1024;
+
+function parseTrustedProxyCidrs(raw: string | undefined): TrustedProxyEntry[] {
+  const key = (raw ?? "").trim();
+  const cached = trustedProxyParseCache.get(key);
+  if (cached) return cached;
+  const out: TrustedProxyEntry[] = [];
+  if (raw) {
+    for (const part of raw.split(",")) {
+      const entry = part.trim();
+      if (!entry) continue;
+      if (out.length >= MAX_TRUSTED_PROXY_ENTRIES) break;
+      const slash = entry.lastIndexOf("/");
+      const addr = (slash === -1 ? entry : entry.slice(0, slash)).trim();
+      const maskPart = slash === -1 ? undefined : entry.slice(slash + 1).trim();
+      if (!addr) continue;
+      const isV6 = addr.includes(":");
+      const maxMask = isV6 ? 128 : 32;
+      const mask =
+        maskPart === undefined || maskPart === "" ? maxMask : Number(maskPart);
+      if (!Number.isInteger(mask) || mask < 0 || mask > maxMask) continue;
+      // Universal allowlists are never trusted (see doc comment above).
+      if (mask === 0) continue;
+      const family: "ipv4" | "ipv6" = isV6 ? "ipv6" : "ipv4";
+      // Validate via a throwaway BlockList so malformed input is dropped.
+      try {
+        const probe = new BlockList();
+        probe.addSubnet(addr, mask, family);
+        out.push({ family, cidr: `${addr}/${mask}` });
+      } catch {
+        continue;
+      }
+    }
   }
+  if (trustedProxyParseCache.size >= MAX_TRUSTED_PROXY_ENTRIES) {
+    trustedProxyParseCache.clear();
+  }
+  trustedProxyParseCache.set(key, out);
   return out;
 }
 
-function ipToNums(value: string): number[] | null {
-  const parts = value.split(".");
-  if (parts.length !== 4) return null;
-  const nums = parts.map(Number);
-  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
-  return nums;
+/**
+ * Build a memoized node:net BlockList from parsed entries. One BlockList per
+ * distinct parsed set (keyed by joined cidrs) so repeated rate-limit checks
+ * do not re-parse. Callers never see raw config strings.
+ */
+const trustedProxyListCache = new Map<string, BlockList>();
+function blockListFor(entries: TrustedProxyEntry[]): BlockList {
+  const key = entries.map((e) => e.cidr).join(",");
+  const cached = trustedProxyListCache.get(key);
+  if (cached) return cached;
+  const list = new BlockList();
+  for (const entry of entries) {
+    const slash = entry.cidr.lastIndexOf("/");
+    const addr = entry.cidr.slice(0, slash);
+    const mask = Number(entry.cidr.slice(slash + 1));
+    list.addSubnet(addr, mask, entry.family);
+  }
+  if (trustedProxyListCache.size >= 256) trustedProxyListCache.clear();
+  trustedProxyListCache.set(key, list);
+  return list;
 }
 
-/** True if `ip` (IPv4) falls inside any of the trusted proxy networks. */
-export function ipInCidrList(ip: string, cidrs: { network: string[]; mask: number }[]): boolean {
-  const nums = ipToNums(ip);
-  if (!nums) return false;
-  for (const { network, mask } of cidrs) {
-    if (mask === 32) {
-      if (nums.every((n, i) => n === Number(network[i]))) return true;
-    } else if (mask > 0) {
-      const whole = Math.floor(mask / 8);
-      const headOk = nums.slice(0, whole).every((n, i) => n === Number(network[i]));
-      if (!headOk) continue;
-      const remBits = mask - whole * 8;
-      const a = nums[whole];
-      const b = Number(network[whole]);
-      if (((a >> (8 - remBits)) & ((1 << remBits) - 1)) === ((b >> (8 - remBits)) & ((1 << remBits) - 1))) {
-        return true;
-      }
-    } else {
-      // /0 matches every IPv4
-      return true;
-    }
+/**
+ * True if `ip` falls inside any of the trusted proxy networks (IPv4+IPv6).
+ * Invalid IPs never match; an empty list matches nothing.
+ */
+export function ipInCidrList(ip: string, cidrs: TrustedProxyEntry[]): boolean {
+  const candidate = ip.trim();
+  if (!candidate || cidrs.length === 0) return false;
+  const family: "ipv4" | "ipv6" = candidate.includes(":") ? "ipv6" : "ipv4";
+  // Fast shape guard before consulting the BlockList.
+  if (family === "ipv4") {
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(candidate)) return false;
+    if (!candidate.split(".").every((o) => Number(o) <= 255)) return false;
+  } else {
+    if (!/^[0-9a-fA-F:.]+$/.test(candidate) || candidate.length > 45) return false;
   }
-  return false;
+  try {
+    return blockListFor(cidrs).check(candidate, family);
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Exported for rate limiting (M-01): returns the parsed TRUSTED_PROXY_CIDRS
  * allowlist from an env source. Never logs or returns raw config strings.
  */
-export function parseTrustedProxyCidrList(
-  env: NodeJS.ProcessEnv
-): { network: string[]; mask: number }[] {
+export function parseTrustedProxyCidrList(env: NodeJS.ProcessEnv): TrustedProxyEntry[] {
   return parseTrustedProxyCidrs(env.TRUSTED_PROXY_CIDRS);
 }
 
@@ -270,6 +316,32 @@ export function validateEnv(env: NodeJS.ProcessEnv): EnvValidationResult {
     const n = Number(port);
     if (!Number.isInteger(n) || n < 1 || n > 65535) {
       errors.push({ name: "REDIS_PORT", issue: "port out of bounds" });
+    }
+  }
+
+  // TRUSTED_PROXY_CIDRS: universal allowlists (/0, ::/0) are never valid —
+  // they would make the leftmost attacker-controlled XFF hop the identity.
+  const trustedRaw = env.TRUSTED_PROXY_CIDRS;
+  if (trustedRaw !== undefined && trustedRaw.trim() !== "") {
+    for (const part of trustedRaw.split(",")) {
+      const slash = part.lastIndexOf("/");
+      const maskPart = slash === -1 ? undefined : part.slice(slash + 1).trim();
+      if (maskPart !== undefined && maskPart !== "" && Number(maskPart) === 0) {
+        errors.push({
+          name: "TRUSTED_PROXY_CIDRS",
+          issue: "universal allowlist prefix is rejected",
+        });
+        break;
+      }
+      // Bare "0.0.0.0" or "::" without a mask is equally universal.
+      const addr = (slash === -1 ? part : part.slice(0, slash)).trim();
+      if (maskPart === undefined && (addr === "0.0.0.0" || addr === "::")) {
+        errors.push({
+          name: "TRUSTED_PROXY_CIDRS",
+          issue: "universal allowlist prefix is rejected",
+        });
+        break;
+      }
     }
   }
 

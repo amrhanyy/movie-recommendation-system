@@ -1,19 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireUser } from "@/lib/security/auth";
+import { requireUser, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
-import { listItemSchema } from "@/lib/security/schemas";
+import { listItemSchema, mediaTypeStrictSchema } from "@/lib/security/schemas";
 import connectToMongoDB from "@/lib/mongodb";
 import { WatchlistModel } from "@/lib/models/WatchlistModel";
 
 // M-05: maximum number of items a single user may keep per list.
 const MAX_LIST_ITEMS = 500;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     await connectToMongoDB();
 
@@ -36,6 +39,9 @@ export async function POST(request: NextRequest) {
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     let body: unknown;
     try {
@@ -112,12 +118,15 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
   try {
     const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     const { searchParams } = new URL(request.url);
     const itemIdStr = searchParams.get("itemId");
@@ -138,7 +147,7 @@ export async function DELETE(request: Request) {
       );
     }
 
-    if (!["movie", "tv", "person"].includes(type)) {
+    if (!mediaTypeStrictSchema.safeParse(type).success) {
       return NextResponse.json(
         { error: "Invalid type" },
         { status: 400 }

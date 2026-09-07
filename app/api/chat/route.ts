@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireUser } from "@/lib/security/auth";
+import { requireUser, assertSameOriginOrReject } from "@/lib/security/auth";
 import {
   applyRateLimitUser,
   RATE_LIMITS,
@@ -135,6 +135,9 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = authResult.user.email;
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     const rateLimitResponse = await applyRateLimitUser(
       request,

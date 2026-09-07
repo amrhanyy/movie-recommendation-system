@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/security/auth";
+import { requireUser, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import connectToMongoDB from "@/lib/mongodb";
 import { User } from "@/lib/models/User";
@@ -23,18 +23,6 @@ const deleteAccountSchema = z
     confirmation: z.literal(ACCOUNT_DELETE_CONFIRMATION),
   })
   .strict();
-
-function isSameOrigin(request: NextRequest): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) return true; // non-browser (CLI/server-server) call
-  const host = request.headers.get("host");
-  if (!host) return false;
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * DELETE /api/user/account
@@ -69,12 +57,8 @@ export async function DELETE(request: NextRequest) {
       return rateLimitResponse;
     }
 
-    if (!isSameOrigin(request)) {
-      return NextResponse.json(
-        { error: "Forbidden" },
-        { status: 403 }
-      );
-    }
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     let body: unknown;
     try {

@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { requireUser } from '@/lib/security/auth';
+import { applyRateLimitUser, RATE_LIMITS } from '@/lib/security/rateLimit';
 import connectToMongoDB from '@/lib/mongodb';
 import { WatchlistModel } from '@/lib/models/WatchlistModel';
 import tmdbClient from '@/lib/tmdb';
@@ -13,13 +14,16 @@ const MAX_DETAIL_ITEMS = 50;
 // Per-item detail cache TTL (30 min) — matches /api/movie/[id].
 const DETAIL_TTL = 1800;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     // Server-authoritative session (M-04: no PII logging of session email)
     const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     await connectToMongoDB();
     const watchlistItems = await WatchlistModel.find({ userId: authResult.user.email });

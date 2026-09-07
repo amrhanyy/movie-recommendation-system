@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession } from '@/lib/security/auth';
+import { requireUser } from '@/lib/security/auth';
 import { applyRateLimitUser, RATE_LIMITS } from '@/lib/security/rateLimit';
 import connectToMongoDB from '@/lib/mongodb';
 import { History } from '@/lib/models/History';
@@ -11,6 +11,7 @@ import {
   httpStatusForAIError,
   mapAIError,
   parseAIRecommendationsFromText,
+  redactSensitive,
 } from '@/lib/ai-security';
 import {
   buildRecommendationGeminiPayload,
@@ -24,7 +25,7 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY;
 async function readUpstreamErrorBody(response: Response): Promise<string> {
   try {
     const text = await response.text();
-    return text.slice(0, 500);
+    return redactSensitive(text.slice(0, 500));
   } catch {
     return '<unreadable>';
   }
@@ -117,7 +118,7 @@ async function getAIRecommendations(preferences: string) {
 export async function GET(request: NextRequest) {
   try {
     // Require authenticated session via central auth module (F-005)
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }

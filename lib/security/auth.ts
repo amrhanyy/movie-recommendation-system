@@ -238,6 +238,78 @@ export function hasElevatedRole(role: UserRole | undefined): boolean {
   return role === "admin" || role === "owner";
 }
 
+export const ORIGIN_VERIFICATION_ERROR = "Origin verification failed";
+
+/**
+ * W1-011/W3-015: single strict origin gate for cookie-authenticated
+ * mutations. Returns a 403 response when the request fails verification,
+ * else null (caller continues).
+ *
+ * Policy (checked in order):
+ * 1. `Origin` present → its origin must equal the NEXTAUTH_URL origin
+ *    (falling back to the request Host when NEXTAUTH_URL is unset, e.g.
+ *    tests/CI). Mismatch → 403.
+ * 2. Else `Referer` present → its origin must equal the expected origin.
+ *    Mismatch → 403.
+ * 3. Else `Sec-Fetch-Site` present → must be exactly `same-origin`.
+ *    Anything else → 403.
+ * 4. Else (no Origin/Referer/Sec-Fetch-Site at all) → 403. Non-browser
+ *    callers of cookie-authed mutations must send one of these headers;
+ *    the old fail-open `if (!origin) return true` allowed headerless
+ *    cross-site requests to pass the gate.
+ */
+export function assertSameOriginOrReject(request: NextRequest): NextResponse | null {
+  const expected = (() => {
+    const configured = process.env.NEXTAUTH_URL;
+    if (configured) {
+      try {
+        return new URL(configured).origin;
+      } catch {
+        // fall through to Host
+      }
+    }
+    const host = request.headers.get("host");
+    return host ? `https://${host}` : null;
+  })();
+  if (!expected) {
+    return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+  }
+
+  const origin = request.headers.get("origin");
+  if (origin) {
+    try {
+      if (new URL(origin).origin !== expected) {
+        return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+      }
+    } catch {
+      return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+    }
+    return null;
+  }
+
+  const referer = request.headers.get("referer");
+  if (referer) {
+    try {
+      if (new URL(referer).origin !== expected) {
+        return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+      }
+    } catch {
+      return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+    }
+    return null;
+  }
+
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite) {
+    if (fetchSite !== "same-origin") {
+      return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+    }
+    return null;
+  }
+
+  return NextResponse.json({ error: ORIGIN_VERIFICATION_ERROR }, { status: 403 });
+}
+
 /**
  * Assert that a user owns a resource identified by email.
  * Use for personal resources (favorites, watchlist, history, chats).

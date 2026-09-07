@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/security/auth";
+import { requireAdmin, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import cacheManager from "@/lib/cacheManager";
 import { CACHE_NAMESPACE } from "@/lib/cache-namespace";
@@ -16,27 +16,6 @@ import { z } from "zod";
  * - Same-origin check on cookie-authenticated mutations.
  * - Strict Zod bodies; raw patterns are not accepted.
  */
-
-const SAME_ORIGIN_ERROR = "Invalid origin";
-
-/**
- * Same-origin policy for cookie-authenticated cache mutations.
- * Origin is required for browser-initiated requests. Server-side calls
- * (e.g. monitoring, CLI tools) may omit Origin; treat absence as allowed
- * only when the request is not browser-initiated (no Origin header at all).
- */
-function isSameOrigin(request: NextRequest): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) return true; // non-browser request (CLI, server-to-server)
-  const host = request.headers.get("host");
-  if (!host) return false;
-  try {
-    const originUrl = new URL(origin);
-    return originUrl.host === host;
-  } catch {
-    return false;
-  }
-}
 
 const noStoreHeaders = {
   "Cache-Control": "no-store",
@@ -128,11 +107,12 @@ export async function POST(request: NextRequest) {
       return authResult.response;
     }
 
-    if (!isSameOrigin(request)) {
-      return NextResponse.json(
-        { error: SAME_ORIGIN_ERROR },
-        { status: 403, headers: noStoreHeaders }
-      );
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) {
+      return NextResponse.json(await originRejection.json(), {
+        status: 403,
+        headers: noStoreHeaders,
+      });
     }
 
     // Rate limit cache administration (F-011)
@@ -224,11 +204,12 @@ export async function DELETE(request: NextRequest) {
       return authResult.response;
     }
 
-    if (!isSameOrigin(request)) {
-      return NextResponse.json(
-        { error: SAME_ORIGIN_ERROR },
-        { status: 403, headers: noStoreHeaders }
-      );
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) {
+      return NextResponse.json(await originRejection.json(), {
+        status: 403,
+        headers: noStoreHeaders,
+      });
     }
 
     // Rate limit cache administration (F-011)

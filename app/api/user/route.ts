@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireSession } from "@/lib/security/auth";
+import { requireUser, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import { User } from "@/lib/models/User";
 import connectToMongoDB from "@/lib/mongodb";
@@ -24,7 +24,7 @@ const updateUserSchema = z
 
 export async function GET(request: NextRequest) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
@@ -50,10 +50,13 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const authResult = await requireSession();
+    const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     // Rate limit profile updates (F-011)
     const rateLimitResponse = await applyRateLimitUser(

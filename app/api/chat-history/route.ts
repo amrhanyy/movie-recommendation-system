@@ -1,21 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireUser } from "@/lib/security/auth";
+import { requireUser, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import connectToMongoDB from "@/lib/mongodb";
 import { ChatHistory } from "@/lib/models/ChatHistory";
 import { chatCutoffDate } from "@/lib/privacy-retention";
-
-function isSameOrigin(request: NextRequest): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) return true; // non-browser (CLI/server-server) call
-  const host = request.headers.get("host");
-  if (!host) return false;
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
 
 // Chat persistence moved to POST /api/chat (server-authoritative, R5).
 // A client-supplied `response` can no longer be written as assistant output,
@@ -67,6 +55,9 @@ export async function POST(request: NextRequest) {
       return authResult.response;
     }
 
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
+
     // Rate limit (F-011) still applies to this rejected path.
     const rateLimitResponse = await applyRateLimitUser(
       request,
@@ -112,10 +103,9 @@ export async function DELETE(request: NextRequest) {
       return rateLimitResponse;
     }
 
-    // R6: same-origin protection for a cookie-authenticated destructive action.
-    if (!isSameOrigin(request)) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    // W1-011: same-origin protection for a cookie-authenticated destructive action.
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     await connectToMongoDB();
 

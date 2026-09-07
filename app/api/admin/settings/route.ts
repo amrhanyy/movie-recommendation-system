@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/security/auth";
+import { requireAdmin, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import connectToMongoDB from "@/lib/mongodb";
 import mongoose from "mongoose";
@@ -42,12 +42,15 @@ const settingsPostSchema = z.object({
     .strict(),
 });
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const authResult = await requireAdmin();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     await connectToMongoDB();
 
@@ -88,6 +91,9 @@ export async function POST(request: NextRequest) {
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     let data: unknown;
     try {

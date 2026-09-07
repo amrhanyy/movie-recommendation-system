@@ -1,12 +1,13 @@
-import { NextResponse } from "next/server";
-import { requireUser } from "@/lib/security/auth";
+import { NextResponse, type NextRequest } from "next/server";
+import { requireUser, assertSameOriginOrReject } from "@/lib/security/auth";
+import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import { objectIdSchema } from "@/lib/security/schemas";
 import connectToMongoDB from "@/lib/mongodb";
 import { ChatHistory } from "@/lib/models/ChatHistory";
 import { chatCutoffDate } from "@/lib/privacy-retention";
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -14,6 +15,9 @@ export async function GET(
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     const { id } = await params;
 
@@ -53,7 +57,7 @@ export async function GET(
 }
 
 export async function DELETE(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -61,6 +65,9 @@ export async function DELETE(
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     const { id } = await params;
 

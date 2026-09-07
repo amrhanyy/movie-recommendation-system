@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import getRedisClient from "@/lib/redis";
 import { CACHE_NAMESPACE } from "@/lib/cache-namespace";
-import { parseTrustedProxyCidrList, ipInCidrList } from "@/lib/env";
+import { parseTrustedProxyCidrList, ipInCidrList, type TrustedProxyEntry } from "@/lib/env";
 import { NextRequest, NextResponse } from "next/server";
 
 // In-memory fallback store
@@ -87,25 +87,44 @@ function isValidIp(value: string): boolean {
 }
 
 /**
- * Get a spoof-resistant client identifier from the request (M-01).
- *
- * Old behavior trusted the *first* hop of `X-Forwarded-For`, which is
- * client-controlled and allowed unlimited rate-limit budget rotation.
+ * Get a spoof-resistant client identifier from the request (M-01 / W3-001).
  *
  * Hardened behavior (the identifier must NOT depend on any client-forgeable
  * value, otherwise the attacker can mint fresh budgets by rotating a header):
+ * - A valid IP keys its bucket as `ip:<ip>` ONLY — no User-Agent component.
+ *   (UA is fully client-controlled; compounding it into the key gave one IP x
+ *   N UAs = N budgets.)
  * - If `TRUSTED_PROXY_CIDRS` is configured, drop rightmost hops that match a
  *   trusted proxy and use the first remaining (untrusted) hop — RFC 7239
  *   style. That hop is the real client as recorded by the trusted edge.
  * - If no allowlist is configured, use the *rightmost* hop only, which is the
- *   entry a sanitizing reverse proxy/CDN appends last. We deliberately do NOT
- *   include a hash of the raw header in the key: any client-writable component
- *   would allow trivial budget rotation.
+ *   entry a sanitizing reverse proxy/CDN appends last.
  * - The candidate must pass IP shape validation, else we fall back to a
  *   privacy-aware user-agent fingerprint (no raw IP is ever logged).
- * - `X-Real-IP` is honored only when it is a single valid IP; it is a last
- *   resort before the UA fingerprint.
+ * - `X-Real-IP` is honored only when the socket peer (the rightmost XFF hop
+ *   when XFF is present, else the transport peer) is itself a trusted proxy;
+ *   otherwise it is ignored (W3-002). In the App Router there is no direct
+ *   socket-peer accessor, so the rightmost XFF hop stands in for the peer:
+ *   with no XFF header there is no trustworthy peer evidence and X-Real-IP
+ *   (fully client-forgeable) is ignored.
+ *
+ * No-IP fallback cardinality: every client without a valid IP shares one UA
+ * bucket per distinct UA string, bounded by MAX_UA_BUCKETS distinct UAs in
+ * this process (extra UAs collapse to a single overflow bucket). This keeps
+ * the unauthenticated fallback from growing memory unboundedly while still
+ * rate-limiting header-only clients; it is NOT a per-IP guarantee. Deployments
+ * needing per-IP precision must terminate behind a proxy that appends XFF.
  */
+const MAX_UA_BUCKETS = 10_000;
+const seenUaHashes = new Set<string>();
+
+function uaFallbackBucket(uaHash: string): string {
+  if (seenUaHashes.has(uaHash)) return `ua:${uaHash}`;
+  if (seenUaHashes.size >= MAX_UA_BUCKETS) return "ua:overflow";
+  seenUaHashes.add(uaHash);
+  return `ua:${uaHash}`;
+}
+
 function getClientIdentifier(request: NextRequest): string {
   const ua = request.headers.get("user-agent") || "unknown";
   const uaHash = createHash("sha256").update(`ua:${ua}`).digest("hex").slice(0, 16);
@@ -115,7 +134,7 @@ function getClientIdentifier(request: NextRequest): string {
     const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
     if (hops.length > 0) {
       let candidate = "";
-      let trustedList: { network: string[]; mask: number }[] = [];
+      let trustedList: TrustedProxyEntry[] = [];
       try {
         trustedList = parseTrustedProxyCidrList(process.env);
       } catch {
@@ -134,23 +153,35 @@ function getClientIdentifier(request: NextRequest): string {
         candidate = hops[hops.length - 1];
       }
       if (isValidIp(candidate)) {
-        // Compound with a UA hash so a shared NAT/egress IP doesn't let
-        // unrelated users share one budget (stability preserved per client).
-        return `ip:${candidate}:${uaHash}`;
+        return `ip:${candidate}`;
       }
     }
   }
 
+  // W3-002: X-Real-IP only when the peer is trusted. The rightmost XFF hop is
+  // the closest observable to the transport peer; without XFF there is no
+  // trustworthy peer evidence, so a lone X-Real-IP (client-forgeable) is
+  // ignored and we fall through to the UA fingerprint.
   const realIp = request.headers.get("x-real-ip");
   if (realIp) {
     const trimmed = realIp.trim();
-    if (isValidIp(trimmed)) {
-      return `ip:${trimmed}:${uaHash}`;
+    if (isValidIp(trimmed) && forwarded) {
+      const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+      const peer = hops.length > 0 ? hops[hops.length - 1] : "";
+      let trustedList: TrustedProxyEntry[] = [];
+      try {
+        trustedList = parseTrustedProxyCidrList(process.env);
+      } catch {
+        trustedList = [];
+      }
+      if (peer && trustedList.length > 0 && ipInCidrList(peer, trustedList)) {
+        return `ip:${trimmed}`;
+      }
     }
   }
 
   // No trustworthy IP: privacy-aware UA fingerprint (no raw IP logged).
-  return `ua:${uaHash}`;
+  return uaFallbackBucket(uaHash);
 }
 
 /**
@@ -277,8 +308,9 @@ export const RATE_LIMITS = {
   // Mood recommendations
   mood: { maxRequests: 20, windowMs: 60_000, prefix: "mood" }, // 20/min
 
-  // Auth-sensitive operations
-  auth: { maxRequests: 10, windowMs: 60_000, prefix: "auth" }, // 10/min
+  // Auth-sensitive operations (IP-keyed on the NextAuth handler; also
+  // usable as a user-keyed fallback elsewhere)
+  auth: { maxRequests: 30, windowMs: 60_000, prefix: "auth" }, // 30/min
 
   // Admin mutations
   adminMutation: { maxRequests: 30, windowMs: 60_000, prefix: "admin" }, // 30/min
@@ -297,7 +329,11 @@ export const RATE_LIMITS = {
   accountDelete: { maxRequests: 2, windowMs: 300_000, prefix: "user-delete" }, // 2/5min
   historyDelete: { maxRequests: 10, windowMs: 60_000, prefix: "history-del" }, // 10/min
   chatDeleteAll: { maxRequests: 5, windowMs: 60_000, prefix: "chat-del" }, // 5/min
-  historyPreference: { maxRequests: 10, windowMs: 60_000, prefix: "hist-pref" }, // 10/min
+
+  // Authenticated reads (W3-004): generous per-user budget for GETs that
+  // return personal data or admin metadata. 120/min absorbs normal UI polling
+  // while bounding scrape loops and shared-Redis fan-out.
+  read: { maxRequests: 120, windowMs: 60_000, prefix: "read" }, // 120/min
 } as const;
 
 /**
@@ -318,7 +354,7 @@ export async function applyRateLimitUser(
 
 /**
  * Helper: apply rate limit to a public (unauthenticated) request.
- * Uses a privacy-aware client identifier.
+ * Uses a privacy-aware client identifier (IP-only when a valid IP exists).
  */
 export async function applyRateLimitPublic(
   request: NextRequest,

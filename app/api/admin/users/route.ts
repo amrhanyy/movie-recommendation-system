@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/security/auth";
+import { requireAdmin, assertSameOriginOrReject } from "@/lib/security/auth";
 import type { UserRole } from "@/lib/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
+import { objectIdSchema } from "@/lib/security/schemas";
 import { User } from "@/lib/models/User";
 import connectToMongoDB from "@/lib/mongodb";
 import { z } from "zod";
@@ -15,10 +16,11 @@ const getPagination = (searchParams: URLSearchParams) => {
   return { page, limit, skip };
 };
 
-// Strict validation for admin user updates
+// Strict validation for admin user updates. userId uses the shared ObjectId
+// schema (W3-009): non-ObjectId ids become 400, never a Mongoose CastError 500.
 const adminUpdateSchema = z
   .object({
-    userId: z.string().min(1).max(128),
+    userId: objectIdSchema,
     updates: z
       .object({
         role: z.enum(["user", "admin", "owner"]).optional(),
@@ -40,6 +42,9 @@ export async function GET(request: NextRequest) {
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     await connectToMongoDB();
 
@@ -72,6 +77,9 @@ export async function PUT(request: NextRequest) {
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const originRejection = assertSameOriginOrReject(request);
+    if (originRejection) return originRejection;
 
     const callerRole = authResult.user.role;
     const callerId = authResult.user.id;

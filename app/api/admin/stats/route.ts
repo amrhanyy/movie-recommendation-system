@@ -1,15 +1,19 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/security/auth";
+import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import { User } from "@/lib/models/User";
 import connectToMongoDB from "@/lib/mongodb";
 import cacheManager from "@/lib/cacheManager";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const authResult = await requireAdmin();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     await connectToMongoDB();
 
