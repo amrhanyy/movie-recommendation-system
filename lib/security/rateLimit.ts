@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import getRedisClient from "@/lib/redis";
 import { CACHE_NAMESPACE } from "@/lib/cache-namespace";
-import { parseTrustedProxyCidrList, ipInCidrList, type TrustedProxyEntry } from "@/lib/env";
+import { parseTrustedProxyCidrList, ipInCidrList, type TrustedProxyEntry } from "@/lib/security/proxy-cidr";
 import { NextRequest, NextResponse } from "next/server";
 
 // In-memory fallback store

@@ -81,7 +81,7 @@ describe('M-01: X-Forwarded-For rate-limit spoofing', () => {
   });
 
   it('W3-003: BlockList CIDR — /32 self-match, /25 boundary, IPv6 member/non-member, /0 rejected', async () => {
-    const { parseTrustedProxyCidrList, ipInCidrList } = await import('@/lib/env');
+    const { parseTrustedProxyCidrList, ipInCidrList } = await import('@/lib/security/proxy-cidr');
     const envFor = (cidrs: string): NodeJS.ProcessEnv =>
       ({ NODE_ENV: 'test', TRUSTED_PROXY_CIDRS: cidrs }) as unknown as NodeJS.ProcessEnv;
     // /32 self-match
