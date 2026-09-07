@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 (v4)
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d682002 (v4)
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (frozen lockfile)
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+  test:
+    name: Test and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 (v4)
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d682002 (v4)
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (frozen lockfile)
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Test coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540614fb9249d497d742d (v4)
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: ignore
+
+  security:
+    name: Dependency audit and secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 (v4)
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d682002 (v4)
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (frozen lockfile)
+        run: npm ci
+
+      # NOTE: tests/build run WITHOUT production secrets and WITHOUT any live
+      # external service. Placeholder env vars below are obviously non-production
+      # and are only provided to satisfy build-time validation if required. They
+      # do not imitate real secrets and are never used against live services.
+      - name: Dependency audit (documented policy)
+        run: npm audit --audit-level=high --omit=dev
+
+      - name: Secret scan (gitleaks)
+        # Least-privilege: uses the pinned standalone CLI (no write token, no
+        # PR comments). Scans git history + working tree.
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION=v8.18.4
+          TMP_DIR=$(mktemp -d)
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/gitleaks_$(echo "${GITLEAKS_VERSION}" | tr -d 'v')_linux_x64.tar.gz" \
+            -o "${TMP_DIR}/gitleaks.tar.gz"
+          tar -xzf "${TMP_DIR}/gitleaks.tar.gz" -C "${TMP_DIR}" gitleaks
+          "${TMP_DIR}/gitleaks" detect \
+            --source . \
+            --config .github/gitleaks.toml \
+            --log-opts="--all" \
+            --redact \
+            --exit-code 1
+
+  build:
+    name: Production build (placeholders only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 (v4)
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d682002 (v4)
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (frozen lockfile)
+        run: npm ci
+
+      - name: Build (with non-production placeholders only)
+        env:
+          NODE_ENV: production
+          NEXTAUTH_URL: https://ci-placeholder.invalid
+          NEXTAUTH_SECRET: ci-placeholder-secret-at-least-32-characters-long
+          GOOGLE_CLIENT_ID: ci-placeholder
+          GOOGLE_CLIENT_SECRET: ci-placeholder
+          MONGODB_URI: mongodb://ci-placeholder.invalid/ci
+          TMDB_API_KEY: ci-placeholder
+          GOOGLE_API_KEY: ci-placeholder
+        run: npm run build
