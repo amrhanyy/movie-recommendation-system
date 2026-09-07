@@ -22,4 +22,7 @@ const ChatHistorySchema = new Schema<IChatHistory>({
   updatedAt: { type: Date, default: Date.now }
 });
 
+// Compound index for cardinality trim (W3-006b)
+ChatHistorySchema.index({ userId: 1, updatedAt: -1 });
+
 export const ChatHistory = mongoose.models.ChatHistory || mongoose.model<IChatHistory>('ChatHistory', ChatHistorySchema);

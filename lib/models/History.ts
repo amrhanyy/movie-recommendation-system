@@ -21,4 +21,7 @@ const HistorySchema = new Schema<IHistory>({
 // Create compound index for unique history entries per user
 HistorySchema.index({ userId: 1, itemId: 1, type: 1 }, { unique: true });
 
+// Compound index for cardinality trim (W3-006b)
+HistorySchema.index({ userId: 1, viewedAt: -1 });
+
 export const History = mongoose.models.History || mongoose.model<IHistory>('History', HistorySchema);
