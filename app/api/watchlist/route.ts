@@ -93,7 +93,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const item = await WatchlistModel.findOneAndUpdate(
+    type WatchlistUpsertResult = {
+      lastErrorObject?: { upserted?: unknown };
+      value?: { _id: unknown } | null;
+    };
+
+    const res = (await WatchlistModel.findOneAndUpdate(
       {
         userId: authResult.user.email,
         itemId: parseResult.data.itemId,
@@ -106,20 +111,18 @@ export async function POST(request: NextRequest) {
           addedAt: new Date(),
         },
       },
-      { upsert: true, new: true }
-    );
+      { upsert: true, new: true, includeRawResult: true }
+    )) as unknown as WatchlistUpsertResult;
+    const isUpsert = !!res.lastErrorObject?.upserted;
+    const doc = res.value;
 
     // W3-005: atomic list cap with rollback — if fresh insert pushed count over 500,
-    // delete the inserted doc and return 400. Re-adds of existing items are unaffected.
-    const isUpsert = !!(item as Record<string, unknown>).upserted;
+    // delete ONLY the overshooting insert and return 400. Update-path documents
+    // (isUpsert false) are NEVER deleted. Re-adds of existing items are unaffected.
     if (isUpsert) {
       const countAfter = await WatchlistModel.countDocuments({ userId: authResult.user.email });
-      if (countAfter > MAX_LIST_ITEMS) {
-        await WatchlistModel.deleteOne({
-          userId: authResult.user.email,
-          itemId: parseResult.data.itemId,
-          type: parseResult.data.type,
-        });
+      if (countAfter > MAX_LIST_ITEMS && doc) {
+        await WatchlistModel.deleteOne({ _id: doc._id });
         return NextResponse.json(
           { error: `Watchlist limit reached (maximum ${MAX_LIST_ITEMS})` },
           { status: 400 }
@@ -127,7 +130,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json(item);
+    return NextResponse.json(doc);
   } catch {
     return NextResponse.json(
       { error: "Failed to update watchlist" },

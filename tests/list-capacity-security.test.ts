@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   countDocuments: vi.fn(),
   exists: vi.fn(),
   findOneAndUpdate: vi.fn(),
+  deleteOne: vi.fn(),
 }));
 
 vi.mock('@/lib/mongodb', () => ({
@@ -41,6 +42,7 @@ vi.mock('@/lib/models/FavoritesModel', () => ({
     countDocuments: mocks.countDocuments,
     exists: mocks.exists,
     findOneAndUpdate: mocks.findOneAndUpdate,
+    deleteOne: mocks.deleteOne,
   },
 }));
 
@@ -49,6 +51,7 @@ vi.mock('@/lib/models/WatchlistModel', () => ({
     countDocuments: mocks.countDocuments,
     exists: mocks.exists,
     findOneAndUpdate: mocks.findOneAndUpdate,
+    deleteOne: mocks.deleteOne,
   },
 }));
 
@@ -85,7 +88,8 @@ describe('M-05: favorites list rate limiting and capacity cap', () => {
     mocks.applyRateLimitPublic.mockReset().mockResolvedValue(null);
     mocks.countDocuments.mockReset().mockResolvedValue(0);
     mocks.exists.mockReset().mockResolvedValue(null);
-    mocks.findOneAndUpdate.mockReset().mockResolvedValue({});
+    mocks.findOneAndUpdate.mockReset().mockResolvedValue({ lastErrorObject: {}, value: { _id: 'x' } });
+    mocks.deleteOne.mockReset().mockResolvedValue({ deletedCount: 1 });
   });
 
   it('returns 429 when the per-user write rate limit denies the request', async () => {
@@ -127,7 +131,7 @@ describe('M-05: favorites list rate limiting and capacity cap', () => {
   it('allows re-adding an existing item when the list is at the cap (no new row)', async () => {
     mocks.countDocuments.mockResolvedValue(500);
     mocks.exists.mockResolvedValue({}); // item already present => upsert only
-    mocks.findOneAndUpdate.mockResolvedValue({ _id: 'x' });
+    mocks.findOneAndUpdate.mockResolvedValue({ lastErrorObject: {}, value: { _id: 'x' } });
 
     const { POST } = await import('@/app/api/favorites/route.ts');
     const res = await POST(makePostRequest('http://localhost/api/favorites', validItem()));
@@ -139,13 +143,51 @@ describe('M-05: favorites list rate limiting and capacity cap', () => {
   it('allows adding when below the cap', async () => {
     mocks.countDocuments.mockResolvedValue(10);
     mocks.exists.mockResolvedValue(null);
-    mocks.findOneAndUpdate.mockResolvedValue({ _id: 'x' });
+    mocks.findOneAndUpdate.mockResolvedValue({ lastErrorObject: { upserted: 'y' }, value: { _id: 'y' } });
 
     const { POST } = await import('@/app/api/favorites/route.ts');
     const res = await POST(makePostRequest('http://localhost/api/favorites', validItem()));
 
     expect(res.status).toBe(200);
     expect(mocks.findOneAndUpdate).toHaveBeenCalled();
+  });
+
+  it('rolls back the overshooting insert: rawResult upserted:true + count 501 -> 400 and deleteOne with inserted _id', async () => {
+    // Race path: pre-check passes (count 500 measured before? use below-cap
+    // pre-check), upsert inserts, post-check sees 501 -> rollback.
+    mocks.countDocuments
+      .mockResolvedValueOnce(499) // pre-check passes
+      .mockResolvedValueOnce(501); // post-check overshoot
+    mocks.exists.mockResolvedValue(null);
+    mocks.findOneAndUpdate.mockResolvedValue({
+      lastErrorObject: { upserted: 'new-id' },
+      value: { _id: 'new-id' },
+    });
+
+    const { POST } = await import('@/app/api/favorites/route.ts');
+    const res = await POST(makePostRequest('http://localhost/api/favorites', validItem()));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('500');
+    expect(mocks.deleteOne).toHaveBeenCalledWith({ _id: 'new-id' });
+  });
+
+  it('never deletes on the update path: rawResult upserted:false + count 501 -> 200 and deleteOne NOT called', async () => {
+    mocks.countDocuments
+      .mockResolvedValueOnce(499)
+      .mockResolvedValueOnce(501);
+    mocks.exists.mockResolvedValue(null);
+    mocks.findOneAndUpdate.mockResolvedValue({
+      lastErrorObject: { n: 1 },
+      value: { _id: 'existing-id' },
+    });
+
+    const { POST } = await import('@/app/api/favorites/route.ts');
+    const res = await POST(makePostRequest('http://localhost/api/favorites', validItem()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.deleteOne).not.toHaveBeenCalled();
   });
 });
 
@@ -158,7 +200,8 @@ describe('M-05: watchlist list capacity cap', () => {
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.countDocuments.mockReset().mockResolvedValue(500);
     mocks.exists.mockReset().mockResolvedValue(null);
-    mocks.findOneAndUpdate.mockReset().mockResolvedValue({});
+    mocks.findOneAndUpdate.mockReset().mockResolvedValue({ lastErrorObject: {}, value: { _id: 'x' } });
+    mocks.deleteOne.mockReset().mockResolvedValue({ deletedCount: 1 });
   });
 
   it('rejects the 501st distinct watchlist item with 400 before findOneAndUpdate', async () => {
@@ -173,7 +216,7 @@ describe('M-05: watchlist list capacity cap', () => {
 
   it('applies the listWrite rate limit config to watchlist POST', async () => {
     mocks.countDocuments.mockResolvedValue(0);
-    mocks.findOneAndUpdate.mockResolvedValue({ _id: 'x' });
+    mocks.findOneAndUpdate.mockResolvedValue({ lastErrorObject: { upserted: 'y' }, value: { _id: 'y' } });
 
     const { POST } = await import('@/app/api/watchlist/route.ts');
     await POST(makePostRequest('http://localhost/api/watchlist', validItem()));

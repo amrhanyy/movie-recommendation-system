@@ -93,7 +93,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const favorite = await FavoritesModel.findOneAndUpdate(
+    type FavoritesUpsertResult = {
+      lastErrorObject?: { upserted?: unknown };
+      value?: { _id: unknown } | null;
+    };
+
+    const res = (await FavoritesModel.findOneAndUpdate(
       {
         userId: authResult.user.email,
         itemId: parseResult.data.itemId,
@@ -105,20 +110,18 @@ export async function POST(request: NextRequest) {
           posterPath: parseResult.data.posterPath ?? null,
         },
       },
-      { upsert: true, new: true }
-    );
+      { upsert: true, new: true, includeRawResult: true }
+    )) as unknown as FavoritesUpsertResult;
+    const isUpsert = !!res.lastErrorObject?.upserted;
+    const doc = res.value;
 
     // W3-005: atomic list cap with rollback — if fresh insert pushed count over 500,
-    // delete the inserted doc and return 400. Re-adds of existing items are unaffected.
-    const isUpsert = !!(favorite as Record<string, unknown>).upserted;
+    // delete ONLY the overshooting insert and return 400. Update-path documents
+    // (isUpsert false) are NEVER deleted. Re-adds of existing items are unaffected.
     if (isUpsert) {
       const countAfter = await FavoritesModel.countDocuments({ userId: authResult.user.email });
-      if (countAfter > MAX_LIST_ITEMS) {
-        await FavoritesModel.deleteOne({
-          userId: authResult.user.email,
-          itemId: parseResult.data.itemId,
-          type: parseResult.data.type,
-        });
+      if (countAfter > MAX_LIST_ITEMS && doc) {
+        await FavoritesModel.deleteOne({ _id: doc._id });
         return NextResponse.json(
           { error: `Favorites list limit reached (maximum ${MAX_LIST_ITEMS})` },
           { status: 400 }
@@ -126,7 +129,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json(favorite);
+    return NextResponse.json(doc);
   } catch {
     return NextResponse.json(
       { error: "Failed to update favorites" },
