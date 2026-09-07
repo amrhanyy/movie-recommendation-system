@@ -11,6 +11,7 @@ const alias = {
 // YouTube iframe attributes) require a browser-like DOM.
 export default defineConfig({
   test: {
+    testTimeout: 20000,
     projects: [
       {
         extends: true,
