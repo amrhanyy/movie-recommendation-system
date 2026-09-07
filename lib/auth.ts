@@ -152,8 +152,10 @@ export const authOptions: NextAuthOptions = {
         }
 
         return true;
-      } catch (error) {
-        console.error("Sign-in error: user creation failed for", user.email);
+      } catch {
+        // W1-012: fixed string generic log only. Never log the email (PII)
+        // or the error object (connection details/PII).
+        console.error("Sign-in error: user creation failed");
         // Do NOT log the full error (may contain PII or connection details)
         // Fail sign-in if the user record cannot be created.
         return false;

@@ -2,6 +2,26 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config({ path: '../.env.local' });
+
+/**
+ * W3-011 guard: this script drops and reseeds collections. It must NEVER run
+ * against production unless the operator passes --allow-production-wipe AND
+ * sets WIPE_PRODUCTION to the literal confirmation value.
+ */
+function assertWipeAllowed(): void {
+  if (process.env.NODE_ENV === 'production') {
+    const flag = process.argv.includes('--allow-production-wipe');
+    const confirmed = process.env.WIPE_PRODUCTION === 'WIPE_PRODUCTION';
+    if (!flag || !confirmed) {
+      console.error(
+        'Refusing to wipe: NODE_ENV=production requires --allow-production-wipe and WIPE_PRODUCTION=WIPE_PRODUCTION.'
+      );
+      process.exit(1);
+    }
+  }
+}
+
+assertWipeAllowed();
 const sampleMovies = [
   {
     title: "Inception",
@@ -180,9 +200,15 @@ async function setupDatabase() {
       createdAt: new Date()
     }))
     await db.collection('ratings').insertMany(sampleRatings)
+    // Counts via plain logs only (no operational event types added; never log PII).
+    // ponytail: counts go to stdout only; promote to structured ops log when an
+    // ops event taxonomy for scripts exists.
     console.log('Database setup completed successfully!')
     console.log(`Inserted ${sampleMovies.length} media items`)
     console.log('Created sample user and ratings')
+    console.log(
+      `counts: media=${sampleMovies.length} users=1 ratings=${sampleRatings.length}`
+    )
     await client.close()
   } catch (error) {
     console.error('Error setting up database:', error)

@@ -14,7 +14,12 @@
  *
  * Usage:
  *   node scripts/promote-owner.js <email>
- *   node scripts/promote-owner.js <email> --force
+ *   node scripts/promote-owner.js <email> --force --confirm=<EMAIL>
+ *
+ * W3-011 guards (never destructive without explicit confirmation):
+ *   - --force additionally requires --confirm=<EMAIL> matching the target.
+ *   - Refuses NODE_ENV=production unless --allow-production-promote is passed.
+ *   - Logs the old owner -> new owner transition (operator audit trail).
  *
  * Environment:
  *   MONGODB_URI must be set in .env or environment.
@@ -23,13 +28,36 @@
 const mongoose = require("mongoose");
 require("dotenv").config();
 
+function argValue(name) {
+  const prefix = `--${name}=`;
+  const found = process.argv.find((a) => a.startsWith(prefix));
+  return found ? found.slice(prefix.length) : undefined;
+}
+
 async function promoteOwner() {
   const email = process.argv[2];
   const force = process.argv.includes("--force");
+  const confirm = argValue("confirm");
+  const allowProd = process.argv.includes("--allow-production-promote");
 
   if (!email) {
-    console.error("Usage: node scripts/promote-owner.js <email> [--force]");
+    console.error("Usage: node scripts/promote-owner.js <email> [--force --confirm=<EMAIL>] [--allow-production-promote]");
     console.error("Error: email argument is required.");
+    process.exit(1);
+  }
+
+  // W3-011: --force demotes the current owner, so require an explicit
+  // per-target confirmation in addition to the flag.
+  if (force && confirm !== email) {
+    console.error("Error: --force requires --confirm=<EMAIL> matching the target email.");
+    process.exit(1);
+  }
+
+  // W3-011: never touch role state in production without an explicit flag.
+  if (process.env.NODE_ENV === "production" && !allowProd) {
+    console.error(
+      "Refusing to promote: NODE_ENV=production requires --allow-production-promote."
+    );
     process.exit(1);
   }
 
@@ -56,7 +84,7 @@ async function promoteOwner() {
     const existingOwner = await User.findOne({ role: "owner" });
     if (existingOwner && !force) {
       console.error("Error: An owner already exists.");
-      console.error("Use --force to override (this will demote the current owner to admin).");
+      console.error("Use --force --confirm=<EMAIL> to override (this will demote the current owner to admin).");
       process.exit(1);
     }
 
@@ -78,6 +106,9 @@ async function promoteOwner() {
     targetUser.role = "owner";
     await targetUser.save();
 
+    // W3-011: explicit old -> new audit line for the operator.
+    const previous = existingOwner ? existingOwner.email : "(none)";
+    console.log(`Owner transition: ${previous} -> ${email}`);
     console.log(`Success: User "${email}" has been promoted to owner.`);
     await mongoose.disconnect();
     process.exit(0);

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
   requireAdmin: vi.fn(),
   requireOwner: vi.fn(),
+  assertSameOriginOrReject: vi.fn(),
   applyRateLimitUser: vi.fn(),
   applyRateLimitPublic: vi.fn(),
   findOne: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('@/lib/security/auth', () => ({
   requireUser: mocks.requireUser,
   requireAdmin: mocks.requireAdmin,
   requireOwner: mocks.requireOwner,
+  assertSameOriginOrReject: mocks.assertSameOriginOrReject,
   hasElevatedRole: (role: string) => role === 'admin' || role === 'owner',
   assertResourceOwner: (a: string, b: string) => a === b,
   wouldRemoveLastOwner: vi.fn().mockResolvedValue(false),
@@ -86,6 +88,7 @@ describe('PUT /api/user (F-001)', () => {
   beforeEach(() => {
     mocks.requireSession.mockReset();
     mocks.requireUser.mockReset();
+    mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.requireAdmin.mockReset();
     mocks.requireOwner.mockReset();
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
@@ -95,7 +98,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('returns 401 for unauthenticated request', async () => {
-    mocks.requireSession.mockResolvedValue(denied(401, 'Authentication required'));
+    mocks.requireUser.mockResolvedValue(denied(401, 'Authentication required'));
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -107,7 +110,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects body containing role', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -119,7 +122,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects body containing email', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -131,7 +134,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects body containing _id', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -143,7 +146,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects unknown fields', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -155,7 +158,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects $ operator fields', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -167,7 +170,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects dotted keys', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -179,7 +182,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('rejects prototype-pollution payloads', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     const { PUT } = await importUserRoute();
     const res = await PUT(
       new NextRequest('http://localhost/api/user', {
@@ -191,7 +194,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('approved preferences update succeeds and does not pass raw body or upsert', async () => {
-    mocks.requireSession.mockResolvedValue(allowed());
+    mocks.requireUser.mockResolvedValue(allowed());
     mocks.findOneAndUpdate.mockImplementation(() => ({
       select: vi.fn().mockResolvedValue({
         _id: '507f1f77bcf86cd799439011',
@@ -215,7 +218,7 @@ describe('PUT /api/user (F-001)', () => {
   });
 
   it('scopes update to the authenticated session identity', async () => {
-    mocks.requireSession.mockResolvedValue(allowed({ ...sessionUser, email: 'other@example.com' }));
+    mocks.requireUser.mockResolvedValue(allowed({ ...sessionUser, email: 'other@example.com' }));
     mocks.findOneAndUpdate.mockResolvedValue({ _id: 'id', email: 'other@example.com' });
     const { PUT } = await importUserRoute();
     await PUT(

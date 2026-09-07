@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
+import { redactSensitive } from '@/lib/ai-security'
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
@@ -77,7 +78,7 @@ export async function GET(request: NextRequest) {
 
     if (!moviesRes.ok) {
       // L-07: log the upstream detail server-side, return a fixed message
-      const errorText = await moviesRes.text()
+      const errorText = redactSensitive((await moviesRes.text()).slice(0, 500))
       console.error('Movies fetch failed:', errorText)
       const status = moviesRes.status >= 400 && moviesRes.status < 500 ? moviesRes.status : 502
       return NextResponse.json({ error: 'Failed to fetch movies' }, { status })

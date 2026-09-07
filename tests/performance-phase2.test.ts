@@ -321,7 +321,7 @@ describe('R3-C: /api/watchlist/details caps fan-out, caches, and has no sleeps',
     mocks.redisGetOrSet.mockImplementation(makeMemoryGetOrSet().fn);
 
     const { GET } = await import('@/app/api/watchlist/details/route.ts');
-    const res = await GET();
+    const res = await GET(new NextRequest('http://localhost/api/watchlist/details'));
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -345,7 +345,7 @@ describe('R3-C: /api/watchlist/details caps fan-out, caches, and has no sleeps',
     mocks.redisGetOrSet.mockImplementation(makeMemoryGetOrSet().fn);
 
     const { GET } = await import('@/app/api/watchlist/details/route.ts');
-    const res = await GET();
+    const res = await GET(new NextRequest('http://localhost/api/watchlist/details'));
     const body = await res.json();
 
     expect(body.length).toBe(2);

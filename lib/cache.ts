@@ -1,10 +1,12 @@
 import getRedisClient from './redis';
 import {
   CACHE_NAMESPACE,
+  MAX_KEY_LENGTH,
   SCAN_BATCH_SIZE,
   MAX_DELETE_KEYS_PER_REQUEST,
   isNamespacedKey,
   applyNamespace,
+  normalizeKeyComponent,
 } from './cache-namespace';
 
 // In-memory fallback cache when Redis is unavailable.
@@ -115,9 +117,25 @@ export class RedisCache {
     }
   }
 
-  /** Namespace a caller-supplied key (idempotent). */
+  /**
+   * Namespace a caller-supplied key (idempotent) and normalize every
+   * component after the canonical prefix (W3-010). Direct callers pass keys
+   * like `movie:${id}:details` where the id segment is caller-validated but
+   * not centrally normalized; splitting on ":" and normalizing each component
+   * keeps `../`, `*`, and extra separators from escaping or forging the key
+   * shape, while already-namespaced keys pass through unchanged.
+   */
   private ns(key: string): string {
-    return applyNamespace(key);
+    const namespaced = applyNamespace(key);
+    const tail = namespaced.startsWith(CACHE_NAMESPACE)
+      ? namespaced.slice(CACHE_NAMESPACE.length)
+      : namespaced;
+    const normalizedTail = tail
+      .split(":")
+      .map((component) => normalizeKeyComponent(component))
+      .join(":");
+    const out = `${CACHE_NAMESPACE}${normalizedTail}`;
+    return out.length > MAX_KEY_LENGTH ? out.slice(0, MAX_KEY_LENGTH) : out;
   }
 
   async set(key: string, value: unknown, expireInSeconds?: number): Promise<void> {

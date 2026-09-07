@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
+  assertSameOriginOrReject: vi.fn(),
   applyRateLimitUser: vi.fn(),
   fetch: vi.fn(),
   findOne: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock('@/lib/mongodb', () => ({
 vi.mock('@/lib/security/auth', () => ({
   requireSession: mocks.requireUser,
   requireUser: mocks.requireUser,
+  assertSameOriginOrReject: mocks.assertSameOriginOrReject,
 }));
 
 vi.mock('@/lib/security/rateLimit', () => ({
@@ -56,6 +58,7 @@ function geminiOk(text = 'A movie answer') {
 describe('R5 chat trust boundary', () => {
   beforeEach(() => {
     mocks.requireUser.mockReset();
+    mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
     mocks.findOne.mockReset();
@@ -279,6 +282,7 @@ describe('R5 chat trust boundary', () => {
 describe('R5 chat-history persistence is server-side only', () => {
   beforeEach(() => {
     mocks.requireUser.mockReset();
+    mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
   });
 

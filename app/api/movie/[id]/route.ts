@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import redisCache from '../../../../lib/cache';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
+import { redactSensitive } from '@/lib/ai-security';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
@@ -76,7 +77,7 @@ export async function GET(
           ])
 
           if (!movieResponse.ok) {
-            const errorText = await movieResponse.text();
+            const errorText = redactSensitive((await movieResponse.text()).slice(0, 500));
             console.error(`TMDB movie fetch error (${movieResponse.status}):`, errorText);
             throw new Error(`Failed to fetch movie: ${movieResponse.status}`);
           }

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
   requireAdmin: vi.fn(),
   requireOwner: vi.fn(),
+  assertSameOriginOrReject: vi.fn(),
   applyRateLimitUser: vi.fn(),
   applyRateLimitPublic: vi.fn(),
   fetch: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('@/lib/security/auth', () => ({
   requireUser: mocks.requireUser,
   requireAdmin: mocks.requireAdmin,
   requireOwner: mocks.requireOwner,
+  assertSameOriginOrReject: mocks.assertSameOriginOrReject,
   hasElevatedRole: (role: string) => role === 'admin' || role === 'owner',
   assertResourceOwner: (a: string, b: string) => a === b,
   wouldRemoveLastOwner: vi.fn().mockResolvedValue(false),
@@ -127,7 +129,7 @@ describe('GET /api/admin/stats (F-010/F-015)', () => {
     mocks.requireAdmin.mockResolvedValue(denied(401, 'Authentication required'));
     vi.resetModules();
     const { GET } = await import('@/app/api/admin/stats/route.ts');
-    const res = await GET();
+    const res = await GET(new NextRequest('http://localhost/api/admin/stats'));
     expect(res.status).toBe(401);
   });
 
@@ -135,7 +137,7 @@ describe('GET /api/admin/stats (F-010/F-015)', () => {
     mocks.requireAdmin.mockResolvedValue(denied(403, 'Forbidden: admin access required'));
     vi.resetModules();
     const { GET } = await import('@/app/api/admin/stats/route.ts');
-    const res = await GET();
+    const res = await GET(new NextRequest('http://localhost/api/admin/stats'));
     expect(res.status).toBe(403);
   });
 
@@ -147,7 +149,7 @@ describe('GET /api/admin/stats (F-010/F-015)', () => {
     mocks.aggregate.mockResolvedValue([]);
     vi.resetModules();
     const { GET } = await import('@/app/api/admin/stats/route.ts');
-    const res = await GET();
+    const res = await GET(new NextRequest('http://localhost/api/admin/stats'));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.totalUsers).toBe(42);
@@ -159,7 +161,7 @@ describe('GET /api/admin/stats (F-010/F-015)', () => {
     vi.resetModules();
     const { GET } = await import('@/app/api/admin/stats/route.ts');
     // Client cannot influence authorization; only the central server helper decides
-    const res = await GET();
+    const res = await GET(new NextRequest('http://localhost/api/admin/stats'));
     expect(res.status).toBe(403);
   });
 });
@@ -169,6 +171,7 @@ describe('POST /api/chat (F-005)', () => {
 
   beforeEach(() => {
     mocks.requireUser.mockReset();
+    mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.fetch.mockReset();
   });

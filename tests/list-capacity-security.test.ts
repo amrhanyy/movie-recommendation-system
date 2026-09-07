@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
+  assertSameOriginOrReject: vi.fn(),
   applyRateLimitUser: vi.fn(),
   applyRateLimitPublic: vi.fn(),
   countDocuments: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('@/lib/mongodb', () => ({
 vi.mock('@/lib/security/auth', () => ({
   requireSession: mocks.requireUser,
   requireUser: mocks.requireUser,
+  assertSameOriginOrReject: mocks.assertSameOriginOrReject,
   requireAdmin: vi.fn(),
   requireOwner: vi.fn(),
   hasElevatedRole: (role: string) => role === 'admin' || role === 'owner',
@@ -78,6 +80,7 @@ describe('M-05: favorites list rate limiting and capacity cap', () => {
     vi.resetModules();
     mocks.requireUser.mockReset();
     mocks.requireUser.mockResolvedValue({ ok: true, user: sessionUser });
+    mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.applyRateLimitPublic.mockReset().mockResolvedValue(null);
     mocks.countDocuments.mockReset().mockResolvedValue(0);
@@ -151,6 +154,7 @@ describe('M-05: watchlist list capacity cap', () => {
     vi.resetModules();
     mocks.requireUser.mockReset();
     mocks.requireUser.mockResolvedValue({ ok: true, user: sessionUser });
+    mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
     mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
     mocks.countDocuments.mockReset().mockResolvedValue(500);
     mocks.exists.mockReset().mockResolvedValue(null);

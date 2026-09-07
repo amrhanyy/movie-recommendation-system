@@ -7,6 +7,7 @@ import type { NextRequest } from 'next/server';
 const mocks = vi.hoisted(() => ({
   requireSession: vi.fn(),
   requireUser: vi.fn(),
+  assertSameOriginOrReject: vi.fn(),
   applyRateLimitUser: vi.fn(),
   findOne: vi.fn(),
   findById: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('@/lib/mongodb', () => ({ default: vi.fn().mockResolvedValue({}) }));
 vi.mock('@/lib/security/auth', () => ({
   requireSession: mocks.requireUser,
   requireUser: mocks.requireUser,
+  assertSameOriginOrReject: mocks.assertSameOriginOrReject,
 }));
 vi.mock('@/lib/security/rateLimit', () => ({
   applyRateLimitUser: mocks.applyRateLimitUser,
@@ -118,6 +120,7 @@ function chainFind(value: unknown) {
 beforeEach(() => {
   vi.resetModules();
   mocks.requireUser.mockReset();
+  mocks.assertSameOriginOrReject.mockReset().mockReturnValue(null);
   mocks.applyRateLimitUser.mockReset().mockResolvedValue(null);
   mocks.findOne.mockReset();
   mocks.findById.mockReset();
@@ -273,6 +276,9 @@ describe('R6 account deletion', () => {
     allowUser();
     mocks.findById.mockReturnValue(chain({ role: 'user' }));
     mocks.countDocuments.mockResolvedValue(2);
+    mocks.assertSameOriginOrReject.mockReturnValueOnce(
+      new Response(JSON.stringify({ error: 'Origin verification failed' }), { status: 403 })
+    );
     const res = await accountDELETE(
       jsonReq('http://x/api/user/account', {
         method: 'DELETE',

@@ -32,8 +32,21 @@ export const MAX_SEARCH_QUERY_LENGTH = 200;
 export const MAX_CHAT_MESSAGE_LENGTH = 2000;
 export const MAX_NAME_LENGTH = 200;
 
-// Favorites / Watchlist / History item schema
+// Favorites / Watchlist item schema: movies + TV only. person is intentionally
+// rejected here (W3-008): the Mongoose models allow only movie|tv, so an
+// accepted person would throw at write time and surface a 500.
 export const listItemSchema = z
+  .object({
+    itemId: tmdbIdSchema,
+    type: mediaTypeStrictSchema,
+    title: z.string().min(1).max(MAX_TITLE_LENGTH),
+    posterPath: z.string().max(MAX_POSTER_PATH_LENGTH).nullable().optional(),
+  })
+  .strict();
+
+// History item schema: movies + TV + person (W3-008). The History model
+// allows person, so the full enum is kept here while lists stay strict.
+export const historyItemSchema = z
   .object({
     itemId: tmdbIdSchema,
     type: mediaTypeSchema,
@@ -41,9 +54,6 @@ export const listItemSchema = z
     posterPath: z.string().max(MAX_POSTER_PATH_LENGTH).nullable().optional(),
   })
   .strict();
-
-// History item schema (same as list item)
-export const historyItemSchema = listItemSchema;
 
 // Chat message schema
 export const chatMessageSchema = z
@@ -91,10 +101,12 @@ export const preferencesSchema = z
   })
   .strict();
 
-// Admin user update schema
+// Admin user update schema. userId must be a MongoDB ObjectId (W3-009/W1-015):
+// the route looks the target up with findById, so a non-ObjectId id would
+// throw a CastError and surface a 500 oracle. ObjectId validation makes it 400.
 export const adminUserUpdateSchema = z
   .object({
-    userId: z.string().min(1).max(128),
+    userId: objectIdSchema,
     updates: z
       .object({
         role: z.enum(["user", "admin", "owner"]).optional(),
@@ -104,16 +116,22 @@ export const adminUserUpdateSchema = z
   })
   .strict();
 
-// Redis cache action schemas
-export const cacheInvalidateSchema = z.object({
-  action: z.literal("invalidate"),
-  id: z.union([z.string().min(1).max(50), z.number()]),
-  type: z.enum(["movie", "tv", "home"]),
-});
+// Redis cache action schemas (W2-001). .strict() rejects __proto__,
+// constructor, prototype, $where, and any other unknown key instead of
+// silently stripping it at the input stage.
+export const cacheInvalidateSchema = z
+  .object({
+    action: z.literal("invalidate"),
+    id: z.union([z.string().min(1).max(50), z.number()]),
+    type: z.enum(["movie", "tv", "home"]),
+  })
+  .strict();
 
-export const cacheClearSchema = z.object({
-  action: z.literal("clear"),
-});
+export const cacheClearSchema = z
+  .object({
+    action: z.literal("clear"),
+  })
+  .strict();
 
 // Mood recommendation schema
 export const moodRecommendationSchema = z
