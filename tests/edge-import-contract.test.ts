@@ -53,4 +53,8 @@ describe('edge-import contract: node:net isolation', () => {
     const hits = files.filter((f) => NODE_NET.test(read(f)));
     expect(hits.map((f) => f.replace(/\\/g, '/'))).toEqual(['lib/security/proxy-cidr.ts']);
   });
+
+  it('lib/boot-state.ts has zero node: imports (safe for instrumentation + ready)', () => {
+    expect(read('lib/boot-state.ts')).not.toMatch(/from\s+["']node:/);
+  });
 });

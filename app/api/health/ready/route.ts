@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import mongoose from "mongoose";
 import { isCoreConfigReady } from "@/lib/env";
+import { getBootRedisState } from "@/lib/boot-state";
 import { buildOperationalEvent } from "@/lib/operational-log";
 
 /**
@@ -64,6 +65,9 @@ async function probeDatabase(): Promise<boolean> {
 export async function GET(request: NextRequest) {
   const started = Date.now();
   const coreReady = isCoreConfigReady();
+  // Redis-misconfigured boot degrades the redis component label only; it must
+  // NOT downgrade the overall status (ready stays 200 when the DB probe is ok).
+  const redisComponent = getBootRedisState() === "misconfigured" ? "misconfigured" : "optional";
 
   // Config is the hard gate. If it is invalid we are "unavailable" and we do
   // not open/depend on a database connection.
@@ -81,7 +85,7 @@ export async function GET(request: NextRequest) {
         components: {
           config: "unavailable",
           database: "disconnected",
-          redis: "optional",
+          redis: redisComponent,
         },
       },
       {
@@ -101,7 +105,7 @@ export async function GET(request: NextRequest) {
         components: {
           config: "ready",
           database: "ready",
-          redis: "optional",
+          redis: redisComponent,
         },
       }
     : {
@@ -111,7 +115,7 @@ export async function GET(request: NextRequest) {
         components: {
           config: "ready",
           database: "disconnected",
-          redis: "optional",
+          redis: redisComponent,
         },
       };
 
