@@ -20,6 +20,7 @@ import {
 import {
   buildRecommendationGeminiPayload,
   GEMINI_GENERATE_URL,
+  GEMINI_TIMEOUT_MS,
   getGeminiApiKey,
 } from '@/lib/gemini-payload';
 
@@ -40,41 +41,54 @@ async function postRecommendationsToGemini(
   apiKey: string,
   preferences: string
 ): Promise<Array<{ title: string; confidence?: number; "sub-genre"?: string; type: string }>> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify(buildRecommendationGeminiPayload(preferences)),
-  });
-
-  if (!response.ok) {
-    const errorData = await readUpstreamErrorBody(response);
-    console.error('[Gemini Upstream Error]', response.status, errorData);
-    throw new AIUpstreamError(
-      mapAIError(response.status, false).code,
-      `AI service error ${response.status}`
-    );
-  }
-
-  let raw: unknown;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
   try {
-    raw = await response.json();
-  } catch {
-    throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
-  }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(buildRecommendationGeminiPayload(preferences)),
+      signal: controller.signal,
+    });
 
-  const content = extractGeminiText(raw);
-  if (!content) {
-    throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
-  }
+    if (!response.ok) {
+      const errorData = await readUpstreamErrorBody(response);
+      console.error('[Gemini Upstream Error]', response.status, errorData);
+      throw new AIUpstreamError(
+        mapAIError(response.status, false).code,
+        `AI service error ${response.status}`
+      );
+    }
 
-  const validated = parseAIRecommendationsFromText(content);
-  if (!validated) {
-    throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch {
+      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
+    }
+
+    const content = extractGeminiText(raw);
+    if (!content) {
+      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
+    }
+
+    const validated = parseAIRecommendationsFromText(content);
+    if (!validated) {
+      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
+    }
+    return validated.recommendations;
+  } catch (error) {
+    if (error instanceof AIUpstreamError) throw error;
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new AIUpstreamError("AI_TIMEOUT", "AI request timed out");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return validated.recommendations;
 }
 
 async function getAIRecommendations(preferences: string) {
@@ -139,11 +153,11 @@ export async function GET(request: NextRequest) {
 
     await connectToMongoDB();
 
-    // Fetch user's data
+    // Fetch user's data (bounded: recs prompt built from <=200 history titles)
     const [history, watchlist, favorites] = await Promise.all([
-      History.find({ userId: authResult.user.email }).sort({ viewedAt: -1 }).limit(10),
-      WatchlistModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }),
-      FavoritesModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 })
+      History.find({ userId: authResult.user.email }).sort({ viewedAt: -1 }).limit(200).select({ title: 1, type: 1, _id: 0 }),
+      WatchlistModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }).limit(500).select({ title: 1, type: 1, _id: 0 }),
+      FavoritesModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }).limit(500).select({ title: 1, type: 1, _id: 0 })
     ]);
 
     // Check if user has added content to watchlist or favorites

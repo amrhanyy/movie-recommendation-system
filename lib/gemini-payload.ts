@@ -7,6 +7,7 @@ import {
 } from "./ai-security";
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
+export const GEMINI_TIMEOUT_MS = 15000;
 export const getGeminiModel = (): string =>
   (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
 

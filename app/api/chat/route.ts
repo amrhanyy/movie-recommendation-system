@@ -20,6 +20,7 @@ import {
   boundChatHistory,
   buildChatGeminiPayload,
   GEMINI_GENERATE_URL,
+  GEMINI_TIMEOUT_MS,
   getGeminiApiKey,
   type ChatTurn,
 } from "@/lib/gemini-payload";
@@ -28,7 +29,6 @@ interface ChatHistoryDoc {
   messages?: { role: string; content: string }[];
 }
 
-const GEMINI_TIMEOUT_MS = 15_000;
 const MAX_MESSAGES_PER_CHAT = 200;
 
 /**

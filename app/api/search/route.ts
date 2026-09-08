@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { applyRateLimitPublic, RATE_LIMITS } from "@/lib/security/rateLimit";
 import { MAX_SEARCH_QUERY_LENGTH } from "@/lib/security/schemas";
+import { redisCache } from "@/lib/cache";
+import { CACHE_SCOPES, buildCacheKey } from "@/lib/cache-namespace";
+
+const SEARCH_TTL = 300;
 
 export async function GET(request: NextRequest) {
   // Rate limit: 30 searches per minute per IP/client (F-011/F-028 fix)
@@ -44,20 +48,23 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const response = await fetch(
-      `https://api.themoviedb.org/3/search/multi?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&page=${pageNum}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
+    const cacheKey = buildCacheKey(CACHE_SCOPES.publicTMDb, `search:${query.trim()}:${pageNum}`);
+    const data = await redisCache.getOrSet(cacheKey, async () => {
+      const response = await fetch(
+        `https://api.themoviedb.org/3/search/multi?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&page=${pageNum}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch from TMDB");
       }
-    );
 
-    if (!response.ok) {
-      throw new Error("Failed to fetch from TMDB");
-    }
-
-    const data = await response.json();
+      return await response.json();
+    }, SEARCH_TTL);
     return NextResponse.json(data);
   } catch {
     return NextResponse.json(

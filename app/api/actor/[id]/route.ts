@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
+import { redisCache } from '@/lib/cache'
+import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace'
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const BASE_URL = 'https://api.themoviedb.org/3'
+
+const ACTOR_TTL = 1800;
 
 export async function GET(
   request: NextRequest,
@@ -23,17 +27,19 @@ export async function GET(
       return NextResponse.json({ error: 'Invalid actor ID' }, { status: 400 });
     }
 
-    // Fetch actor details with additional data
-    const actorRes = await fetch(
-      `${BASE_URL}/person/${actorId}?api_key=${TMDB_API_KEY}&append_to_response=images,movie_credits,tv_credits`,
-      { next: { revalidate: 3600 } }
-    )
+    // Fetch actor details with additional data (server cache, 30 min)
+    const cacheKey = buildCacheKey(CACHE_SCOPES.publicTMDb, `actor:${actorId}:details`);
+    const actorData = await redisCache.getOrSet(cacheKey, async () => {
+      const actorRes = await fetch(
+        `${BASE_URL}/person/${actorId}?api_key=${TMDB_API_KEY}&append_to_response=images,movie_credits,tv_credits`
+      )
 
-    if (!actorRes.ok) {
-      throw new Error(`Actor fetch failed: ${actorRes.status}`)
-    }
+      if (!actorRes.ok) {
+        throw new Error(`Actor fetch failed: ${actorRes.status}`)
+      }
 
-    const actorData = await actorRes.json()
+      return await actorRes.json()
+    }, ACTOR_TTL);
 
     return NextResponse.json(actorData)
   } catch (error) {

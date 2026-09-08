@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { tmdbIdSchema, mediaTypeStrictSchema } from '@/lib/security/schemas';
+import { redisCache } from '@/lib/cache';
+import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace';
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
+
+const GENRE_CONTENT_TTL = 3600;
 
 // Complete genre mapping between movies and TV shows
 const genreMapping: { [key: string]: { movie: string; tv: string } } = {
@@ -69,36 +73,42 @@ export async function GET(
       genreId = typeParse.data === 'tv' ? genreMapping[id].tv : genreMapping[id].movie;
     }
 
-    // Fetch the content with the mapped genre ID
-    const res = await fetch(
-      `${TMDB_API_URL}/discover/${typeParse.data}?api_key=${TMDB_API_KEY}&with_genres=${genreId}&page=${page}&language=en-US&include_adult=false&sort_by=popularity.desc`,
-      { 
-        next: { revalidate: 3600 },
-        headers: {
-          'Accept': 'application/json'
+    // Fetch the content with the mapped genre ID (server cache, 1 hour)
+    const cacheKey = buildCacheKey(CACHE_SCOPES.publicTMDb, `genre:${typeParse.data}:${genreId}:${page}`);
+    const data = await redisCache.getOrSet(cacheKey, async () => {
+      const res = await fetch(
+        `${TMDB_API_URL}/discover/${typeParse.data}?api_key=${TMDB_API_KEY}&with_genres=${genreId}&page=${page}&language=en-US&include_adult=false&sort_by=popularity.desc`,
+        {
+          headers: {
+            'Accept': 'application/json'
+          }
         }
+      )
+
+      if (!res.ok) {
+        throw Object.assign(new Error('Failed to fetch genre content'), {
+          status: res.status >= 400 && res.status < 500 ? res.status : 502,
+        });
       }
-    )
 
-    if (!res.ok) {
-      // L-07: fixed error text, no upstream status_message passthrough
-      const status = res.status >= 400 && res.status < 500 ? res.status : 502;
-      return NextResponse.json(
-        { error: 'Failed to fetch genre content' },
-        { status }
-      )
-    }
+      const body = await res.json()
+      if (!body.results) {
+        throw Object.assign(new Error('Invalid response from upstream service'), { status: 500 });
+      }
 
-    const data = await res.json()
-    if (!data.results) {
-      return NextResponse.json(
-        { error: 'Invalid response from upstream service' },
-        { status: 500 }
-      )
-    }
+      return body;
+    }, GENRE_CONTENT_TTL);
 
     return NextResponse.json(data)
   } catch (error) {
+    if (error instanceof Error && 'status' in error && typeof (error as { status?: unknown }).status === 'number') {
+      // L-07: fixed error text, no upstream status_message passthrough
+      const status = (error as { status: number }).status;
+      const message = status === 500 && error.message !== 'Failed to fetch genre content'
+        ? error.message
+        : 'Failed to fetch genre content';
+      return NextResponse.json({ error: message }, { status });
+    }
     console.error('Genre content API error:', error)
     return NextResponse.json(
       { error: 'Failed to fetch genre content' },

@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { tmdbIdSchema } from '@/lib/security/schemas';
+import { redisCache } from '@/lib/cache';
+import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const BASE_URL = 'https://api.themoviedb.org/3';
+
+const SIMILAR_TTL = 3600;
 
 export async function GET(
   request: NextRequest,
@@ -28,25 +32,31 @@ export async function GET(
       return NextResponse.json({ error: 'Upstream service unavailable' }, { status: 503 });
     }
 
-    // Fetch similar movies from TMDB
-    const response = await fetch(
-      `${BASE_URL}/movie/${movieId}/similar?api_key=${TMDB_API_KEY}`,
-      { next: { revalidate: 3600 } } // Cache for 1 hour
-    );
-
-    if (!response.ok) {
-      // L-07: fixed error text, no upstream status/body passthrough
-      const status = response.status >= 400 && response.status < 500 ? response.status : 502;
-      return NextResponse.json(
-        { error: 'Failed to fetch similar movies' },
-        { status }
+    // Fetch similar movies from TMDB (server cache, 1 hour)
+    const cacheKey = buildCacheKey(CACHE_SCOPES.publicTMDb, `movie:${movieId}:similar`);
+    const data = await redisCache.getOrSet(cacheKey, async () => {
+      const response = await fetch(
+        `${BASE_URL}/movie/${movieId}/similar?api_key=${TMDB_API_KEY}`
       );
-    }
 
-    const data = await response.json();
+      if (!response.ok) {
+        throw Object.assign(new Error('Failed to fetch similar movies'), {
+          status: response.status >= 400 && response.status < 500 ? response.status : 502,
+        });
+      }
+
+      return await response.json();
+    }, SIMILAR_TTL);
 
     return NextResponse.json(data);
   } catch (error) {
+    if (error instanceof Error && 'status' in error && typeof (error as { status?: unknown }).status === 'number') {
+      // L-07: fixed error text, no upstream status/body passthrough
+      return NextResponse.json(
+        { error: 'Failed to fetch similar movies' },
+        { status: (error as { status: number }).status }
+      );
+    }
     console.error('Error fetching similar movies:', error);
     return NextResponse.json(
       { error: 'Failed to fetch similar movies' },

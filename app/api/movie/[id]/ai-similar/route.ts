@@ -15,6 +15,7 @@ import {
 import {
   buildSimilarMoviesGeminiPayload,
   GEMINI_GENERATE_URL,
+  GEMINI_TIMEOUT_MS,
   getGeminiApiKey,
 } from '@/lib/gemini-payload';
 
@@ -43,6 +44,8 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
   let retryCount = 0;
 
   while (retryCount < maxRetries) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
     try {
       const response = await fetch(GEMINI_GENERATE_URL, {
         method: 'POST',
@@ -51,7 +54,9 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
           'x-goog-api-key': apiKey,
         },
         body: JSON.stringify(buildSimilarMoviesGeminiPayload(movieDetails)),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         let errorData = '<unreadable>';
@@ -94,6 +99,10 @@ async function getAISimilarMovies(movieDetails: MovieDetailItem) {
       }
       return validated.similar_movies;
     } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new AIUpstreamError("AI_TIMEOUT", "AI request timed out");
+      }
       retryCount++;
       if (
         retryCount < maxRetries &&

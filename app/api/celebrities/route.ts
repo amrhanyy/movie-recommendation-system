@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
+import { redisCache } from '@/lib/cache';
+import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace';
+
+const CELEBRITIES_TTL = 300;
 
 export async function GET(request: NextRequest) {
   // Rate limit public TMDB proxy (F-011 / F-028)
@@ -18,14 +22,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid page' }, { status: 400 });
   }
 
-  const response = await fetch(
-    `https://api.themoviedb.org/3/person/popular?api_key=${API_KEY}&language=en-US&page=${page}`
-  );
+  const cacheKey = buildCacheKey(CACHE_SCOPES.publicTMDb, `celebrities:${page}`);
+  try {
+    const data = await redisCache.getOrSet(cacheKey, async () => {
+      const response = await fetch(
+        `https://api.themoviedb.org/3/person/popular?api_key=${API_KEY}&language=en-US&page=${page}`
+      );
 
-  if (!response.ok) {
+      if (!response.ok) {
+        throw new Error('Failed to fetch celebrities');
+      }
+
+      return await response.json();
+    }, CELEBRITIES_TTL);
+
+    return NextResponse.json(data);
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch celebrities' }, { status: 502 });
   }
-
-  const data = await response.json();
-  return NextResponse.json(data);
 }
