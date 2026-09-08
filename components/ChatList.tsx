@@ -55,6 +55,9 @@ export default function ChatList({
   }
 
   const getPreviewText = (messages: ChatSession['messages']) => {
+    // Defense-in-depth: a list item missing/empty `messages` degrades to
+    // 'New Chat' instead of throwing (the projection fix keeps `messages` present).
+    if (!Array.isArray(messages) || messages.length === 0) return 'New Chat'
     // Try to get the first user message which is more descriptive of the conversation
     const lastUserMessage = messages.filter(m => m.role === 'user')[0] || messages[0]
     if (!lastUserMessage) return 'New Chat'

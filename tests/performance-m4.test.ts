@@ -263,7 +263,7 @@ describe('M4 read caps + degraded clear', () => {
     const res = await GET(new NextRequest('http://localhost/api/chat-history/list'));
     expect(res.status).toBe(200);
     expect(chain.limit).toHaveBeenCalledWith(100);
-    expect(chain.select).toHaveBeenCalledWith({ _id: 1, title: 1, updatedAt: 1, createdAt: 1 });
+    expect(chain.select).toHaveBeenCalledWith({ _id: 1, title: 1, updatedAt: 1, createdAt: 1, messages: 1 });
     expect((await res.json()).length).toBe(100);
   });
 

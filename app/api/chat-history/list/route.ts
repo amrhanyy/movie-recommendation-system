@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     })
       .sort({ updatedAt: -1 })
       .limit(100)
-      .select({ _id: 1, title: 1, updatedAt: 1, createdAt: 1 })
+      .select({ _id: 1, title: 1, updatedAt: 1, createdAt: 1, messages: 1 })
       .lean();
 
     return NextResponse.json(chats);
