@@ -6,6 +6,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -85,6 +86,12 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     [watchlistIds]
   )
 
+  // Identity-stable toggle: functional setState only, no watchlistIds dep.
+  // alreadyIn is resolved inside the updater via a ref mirror, so consumers
+  // holding this callback never re-render fleet-wide on toggle.
+  const watchlistIdsRef = useRef(watchlistIds)
+  watchlistIdsRef.current = watchlistIds
+
   const toggleWatchlist = useCallback(
     async (item: WatchlistToggleItem) => {
       if (!session?.user?.email) {
@@ -92,7 +99,7 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      const alreadyIn = watchlistIds.has(item.itemId)
+      const alreadyIn = watchlistIdsRef.current.has(item.itemId)
 
       // Optimistic update.
       setWatchlistIds((prev) => {
@@ -131,7 +138,7 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
         toast.error('Failed to update watchlist')
       }
     },
-    [session?.user?.email, watchlistIds]
+    [session?.user?.email]
   )
 
   const value = useMemo<WatchlistContextValue>(

@@ -26,8 +26,17 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
   const [isLoading, setIsLoading] = useState(false)
   const [activeItem, setActiveItem] = useState<MediaItem | null>(null)
   const scrollContainerRef = useRef<HTMLUListElement>(null)
+  // M5: consume initialMovies for the default 'day' window with zero fetch on
+  // mount. Only refetch when the user switches the time window.
+  const hasFetchedRef = useRef(false)
 
-  const handleTimeWindowChange = async (newWindow: 'day' | 'week') => {
+  const handleTimeWindowChange = async (newWindow: 'day' | 'week', opts?: { initial?: boolean }) => {
+    if (opts?.initial && Array.isArray(initialMovies) && initialMovies.length > 0) {
+      setMediaItems(initialMovies)
+      setTimeWindow('day')
+      setIsLoading(false)
+      return
+    }
     try {
       setIsLoading(true)
       setTimeWindow(newWindow)
@@ -83,7 +92,18 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
   };
 
   useEffect(() => {
-    handleTimeWindowChange('day')
+    // Default 'day' window is already served by initialMovies: no fetch on mount.
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true
+      if (Array.isArray(initialMovies) && initialMovies.length > 0) {
+        setMediaItems(initialMovies)
+        setTimeWindow('day')
+        setIsLoading(false)
+        return
+      }
+    }
+    void handleTimeWindowChange('day')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   if (isLoading) {
@@ -95,15 +115,15 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
   }
 
   return (
-    <section className="relative">
-      {activeItem && (
-        <div className="fixed inset-0 -z-10 transition-opacity duration-1000">
+    <section className="relative" aria-label="Trending">
+      {activeItem?.backdrop_path && (
+        <div className="fixed inset-0 -z-10 transition-opacity duration-1000" aria-hidden="true">
           <Image
-            src={`https://image.tmdb.org/t/p/original${activeItem.backdrop_path}`}
+            src={`https://image.tmdb.org/t/p/w780${activeItem.backdrop_path}`}
             alt=""
             fill
+            sizes="100vw"
             className="object-cover opacity-25 transition-transform duration-500 scale-105"
-            priority
           />
           <div className="absolute inset-0 bg-gradient-to-t from-gray-900 via-gray-900/80 to-gray-900/60" />
         </div>
@@ -150,7 +170,7 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
             type="button"
             onClick={() => scroll('left')}
             aria-label="Scroll left"
-            className="absolute left-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full
+            className="absolute left-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                       opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                       transition-opacity duration-300 backdrop-blur-sm"
           >
@@ -162,7 +182,7 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
             type="button"
             onClick={() => scroll('right')}
             aria-label="Scroll right"
-            className="absolute right-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full
+            className="absolute right-2 top-1/2 -translate-y-1/2 z-10 bg-black/50 hover:bg-black/70 text-white min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                       opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-cyan-500 focus:outline-none
                       transition-opacity duration-300 backdrop-blur-sm"
           >
@@ -197,7 +217,7 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
                         onClick={(e) => handleWatchlistToggle(item, e)}
                         aria-pressed={isInWatchlist(item.id)}
                         aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
-                        className="group/tooltip absolute top-2 right-2 p-2 rounded-full
+                        className="group/tooltip absolute top-2 right-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                                   bg-black/50 backdrop-blur-sm border border-gray-700/50
                                   text-white hover:bg-black/70 hover:scale-110
                                   transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
@@ -218,12 +238,14 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
                             <div className="flex items-center gap-2">
                               <div className="px-2 py-1 rounded-md bg-cyan-500/20 backdrop-blur-sm border border-cyan-500/20">
                                 <span className="text-cyan-400 text-xs">
-                                  {new Date(item.release_date || item.first_air_date || '').getFullYear()}
+                                  {item.release_date || item.first_air_date
+                                    ? new Date(item.release_date || item.first_air_date || '').getFullYear()
+                                    : '—'}
                                 </span>
                               </div>
                               <div className="w-8 h-8 rounded-lg bg-black/50 backdrop-blur-sm flex items-center justify-center border border-cyan-500/20">
                                 <div className="text-sm font-bold text-cyan-400">
-                                  {item.vote_average.toFixed(1)}
+                                  {typeof item.vote_average === 'number' ? item.vote_average.toFixed(1) : '—'}
                                 </div>
                               </div>
                             </div>
