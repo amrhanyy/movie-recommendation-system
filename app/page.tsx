@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 import { ChatAssistant } from '@/components/ChatAssistant'
@@ -39,22 +39,24 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    async function fetchMovies() {
-      try {
-        const trendingRes = await fetch('/api/trending')
-        if (!trendingRes.ok) throw new Error('Failed to fetch trending movies')
-        const trendingData = await trendingRes.json()
-        setTrendingMovies(trendingData.results)
-      } catch (err) {
-        setError('Failed to load movies')
-        console.error('Error:', err)
-      } finally {
-        setIsLoading(false)
-      }
+  async function fetchMovies() {
+    setIsLoading(true)
+    setError('')
+    try {
+      const trendingRes = await fetch('/api/trending')
+      if (!trendingRes.ok) throw new Error('Failed to fetch trending movies')
+      const trendingData = await trendingRes.json()
+      setTrendingMovies(trendingData.results)
+    } catch (err) {
+      setError('Failed to load movies')
+      console.error('Error:', err)
+    } finally {
+      setIsLoading(false)
     }
+  }
 
-    fetchMovies()
+  useEffect(() => {
+    void fetchMovies()
   }, [])
 
   return (
@@ -127,13 +129,23 @@ export default function HomePage() {
               </div>
 
               {/* Right Content - Movie Strip */}
-              <div className="flex-1 relative min-h-[300px]">
-                <div className="absolute inset-y-0 right-0 flex items-center gap-4">
+              <div className="hidden md:flex flex-1 relative min-h-[300px]">
+                <div className="absolute inset-y-0 right-0 hidden md:flex items-center gap-4">
                   {trendingMovies.slice(0, 5).map((movie, index) => (
                     <div
                       key={movie.id}
+                      role="link"
+                      tabIndex={0}
+                      aria-label={`View details for ${movie.title}`}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          router.push(`/movie/${movie.id}`)
+                        }
+                      }}
                       className={`relative w-36 aspect-[2/3] rounded-lg overflow-hidden cursor-pointer
                                 transform transition-all duration-500 hover:scale-105 hover:z-10
+                                focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500
                                 ${index === 0 ? '' : '-ml-24'}`}
                       style={{
                         transform: `translateX(${index * 20}px) rotate(${index * 2}deg)`,
@@ -144,6 +156,8 @@ export default function HomePage() {
                         src={`https://image.tmdb.org/t/p/w500${movie.poster_path}`}
                         alt={movie.title}
                         fill
+                        priority={index === 0}
+                        sizes="(max-width: 768px) 50vw, 144px"
                         className="object-cover"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
@@ -164,6 +178,33 @@ export default function HomePage() {
                               blur-xl opacity-50 animate-pulse" />
               </div>
             </div>
+            {/* Mobile fallback: stacked hero posters below md */}
+            <div className="mt-6 flex md:hidden items-center gap-3 overflow-x-auto pb-2">
+              {trendingMovies.slice(0, 5).map((movie) => (
+                <div
+                  key={`mobile-${movie.id}`}
+                  role="link"
+                  tabIndex={0}
+                  aria-label={`View details for ${movie.title}`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      router.push(`/movie/${movie.id}`)
+                    }
+                  }}
+                  onClick={() => router.push(`/movie/${movie.id}`)}
+                  className="relative w-28 aspect-[2/3] flex-none rounded-lg overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+                >
+                  <Image
+                    src={`https://image.tmdb.org/t/p/w342${movie.poster_path}`}
+                    alt={movie.title}
+                    fill
+                    sizes="112px"
+                    className="object-cover"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -172,9 +213,29 @@ export default function HomePage() {
             {/* Auth Required Message */}
             {!session && <AuthRequiredMessage />}
 
-            {/* Trending Section */}
-            {!isLoading && !error && (
-              <TrendingSection initialMovies={trendingMovies} />
+            {/* Hero fetch error: visible message + retry (M5 silent-failure fix) */}
+            {error && (
+              <div role="alert" className="rounded-3xl border border-red-700/50 bg-gray-800/30 p-8 text-center">
+                <p className="text-gray-300 mb-6">{error}</p>
+                <button
+                  type="button"
+                  onClick={() => void fetchMovies()}
+                  className="px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white rounded-xl transition-colors"
+                >
+                  Try Again
+                </button>
+              </div>
+            )}
+
+            {/* Trending Section: skeletons while the hero fetch is in flight */}
+            {isLoading ? (
+              <div role="status" aria-label="Loading trending" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                {[...Array(6)].map((_, i) => (
+                  <div key={`home-trending-skeleton-${i}`} className="aspect-[2/3] bg-gray-800/50 rounded-xl animate-pulse" />
+                ))}
+              </div>
+            ) : (
+              !error && <TrendingSection initialMovies={trendingMovies} />
             )}
 
             {/* Genre Grid - Add this section */}

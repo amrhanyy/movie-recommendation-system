@@ -34,6 +34,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
   const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [retryToken, setRetryToken] = useState(0)
   const router = useRouter()
   const searchParams = useSearchParams()
   const { id } = use(params)
@@ -95,9 +96,21 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
     }
   }
 
+  const retryFetch = () => {
+    setError(null)
+    setHasMore(true)
+    setIsLoading(true)
+    setPage(1)
+    setContent([])
+    setContentIds(new Set())
+    setRetryToken((t) => t + 1)
+  }
+
   useEffect(() => {
     async function fetchGenreContent() {
       try {
+        setIsLoading(true)
+        setError(null)
         const [contentRes, genreRes] = await Promise.all([
           fetch(`/api/genre/${id}/content?page=1&type=${contentType}`),
           fetch(`/api/genre/${id}`)
@@ -148,7 +161,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
     setHasMore(true);
     setIsLoading(true);
     fetchGenreContent();
-  }, [id, contentType]);
+  }, [id, contentType, retryToken]);
 
   useEffect(() => {
     let timeoutId: NodeJS.Timeout;
@@ -176,11 +189,12 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
   if (error) {
     return (
       <div className="container-fluid py-4 px-2 max-w-[2000px] mx-auto">
-        <div className="text-red-500 text-center py-4">
+        <div role="alert" className="text-red-500 text-center py-4">
           {error}
-          <button 
-            onClick={() => {setError(null); setHasMore(true);}}
-            className="ml-4 text-cyan-400 hover:text-cyan-300"
+          <button
+            type="button"
+            onClick={retryFetch}
+            className="ml-4 text-cyan-400 hover:text-cyan-300 min-h-[44px] min-w-[44px] px-4"
           >
             Try Again
           </button>
@@ -227,7 +241,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
                   onClick={(e) => handleWatchlistToggle(item, e)}
                   aria-pressed={isInWatchlist(item.id)}
                   aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
-                  className="group/tooltip absolute top-2 right-2 p-2 rounded-full
+                  className="group/tooltip absolute top-2 right-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                             bg-black/50 backdrop-blur-sm border border-gray-700/50
                             text-white hover:bg-black/70 hover:scale-110
                             transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
@@ -332,7 +346,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
               onClick={(e) => handleWatchlistToggle(item, e)}
               aria-pressed={isInWatchlist(item.id)}
               aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
-              className="group/tooltip absolute top-2 right-2 p-2 rounded-full
+              className="group/tooltip absolute top-2 right-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                         bg-black/50 backdrop-blur-sm border border-gray-700/50
                         text-white hover:bg-black/70 hover:scale-110
                         transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
@@ -346,7 +360,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
         ))}
       </div>
 
-      {hasMore && (
+      {(hasMore || isLoadingMore) && isLoadingMore && (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 mt-2">
           {[...Array(20)].map((_, i) => (
             <div key={`loading-more-skeleton-${i}`} className="aspect-[2/3] bg-gray-800/50 rounded-lg animate-pulse" />
