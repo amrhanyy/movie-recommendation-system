@@ -69,7 +69,11 @@ export function buildRedisConfig(env: NodeJS.ProcessEnv = process.env): RedisCon
           reconnectStrategy: (retry: number) =>
             retry > 3 ? false : Math.min(retry * 1000, 3000),
         },
-        commandsQueueMaxLength: 5,
+        // REDIS-CAL: commandsQueueMaxLength 500 absorbs cross-request
+        // summation on a shared serverless instance (e.g. home burst of
+        // single-key getOrSet calls + one cold watchlist/details fan-out of
+        // ~100 commands). Memory cost is bounded queued command refs only.
+        commandsQueueMaxLength: 500,
         disableOfflineQueue: true,
       },
     };
@@ -93,7 +97,8 @@ export function buildRedisConfig(env: NodeJS.ProcessEnv = process.env): RedisCon
 
   const clientConfig: RedisClientOptions = {
     socket,
-    commandsQueueMaxLength: 5,
+    // REDIS-CAL: same 500 calibration as the URL branch above.
+    commandsQueueMaxLength: 500,
     disableOfflineQueue: true,
   };
   // Redis Cloud provisions ACL auth as user 'default' + password. The node-redis

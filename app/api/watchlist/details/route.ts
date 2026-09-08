@@ -13,6 +13,11 @@ import { buildCacheKey, CACHE_SCOPES } from '@/lib/cache-namespace';
 const MAX_DETAIL_ITEMS = 50;
 // Per-item detail cache TTL (30 min) — matches /api/movie/[id].
 const DETAIL_TTL = 1800;
+// REDIS-CAL: bounded concurrency for the per-item detail fan-out (max 8
+// in-flight), mirroring the M4 ai-recommendations enrichment pool. Caps
+// per-invocation Redis pressure (GET + SET per item) and smooths the TMDB
+// origin burst on cold misses, regardless of list size.
+const DETAIL_POOL_SIZE = 8;
 
 export async function GET(request: NextRequest) {
   try {
@@ -34,8 +39,17 @@ export async function GET(request: NextRequest) {
     // R3: no artificial batch sleeps. Each item's TMDB detail fetch is
     // cached server-side (30 min), so repeated reads do not re-hit TMDB and
     // upstream calls stay bounded and parallel.
-    const results = await Promise.all(
-      toResolve.map(async (item) => {
+    // REDIS-CAL: process in batches of DETAIL_POOL_SIZE so both the Redis
+    // getOrSet calls and the TMDB origin fetches are smoothed (pool also
+    // bounds in-flight TMDB requests on a full-cold miss).
+    const results: Awaited<ReturnType<typeof resolveItem>>[] = [];
+    for (let i = 0; i < toResolve.length; i += DETAIL_POOL_SIZE) {
+      const batch = toResolve.slice(i, i + DETAIL_POOL_SIZE);
+      const batchResults = await Promise.all(batch.map(resolveItem));
+      results.push(...batchResults);
+    }
+
+    async function resolveItem(item: (typeof toResolve)[number]) {
         const baseItem = item.toObject();
 
         if (!item.itemId || !item.type || !['movie', 'tv'].includes(item.type)) {
@@ -72,8 +86,7 @@ export async function GET(request: NextRequest) {
           console.error(`Error fetching details for ${item.type} ${item.itemId}`);
           return baseItem; // Return base item on error
         }
-      })
-    );
+    }
 
     return NextResponse.json(results);
   } catch {
