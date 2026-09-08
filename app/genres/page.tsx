@@ -14,25 +14,46 @@ interface Genre {
 export default function GenresPage() {
   const [genres, setGenres] = useState<Genre[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchGenres = async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/genres')
+      if (!res.ok) throw new Error('Failed to fetch genres')
+      const data = await res.json()
+      setGenres(Array.isArray(data.genres) ? data.genres : [])
+    } catch (err) {
+      setError('We could not load genres right now. Please try again.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   useEffect(() => {
-    async function fetchGenres() {
-      try {
-        const res = await fetch('/api/genres')
-        const data = await res.json()
-        setGenres(data.genres)
-      } catch (error) {
-        console.error('Failed to fetch genres:', error)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
-    fetchGenres()
+    void fetchGenres()
   }, [])
 
   if (isLoading) {
     return <LoadingSpinner message="Loading genres..." />
+  }
+
+  if (error) {
+    return (
+      <div className="container mx-auto px-4 py-12">
+        <div role="alert" className="rounded-3xl border border-red-700/50 bg-gray-800/30 p-8 text-center">
+          <p className="text-gray-300 mb-6">{error}</p>
+          <button
+            type="button"
+            onClick={() => void fetchGenres()}
+            className="min-h-[44px] px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white rounded-xl transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+          >
+            Try Again
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -56,14 +77,21 @@ export default function GenresPage() {
       </div>
       
       {/* Genre Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 lg:gap-8">
-        {genres.map((genre) => (
-          <GenreCard 
-            key={genre.id}
-            {...genre}
-          />
-        ))}
-      </div>
+      {genres.length === 0 ? (
+        <div className="text-center py-12 bg-gray-800/30 rounded-3xl border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-white mb-2">No genres available</h3>
+          <p className="text-gray-400">Check back later for new categories.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 lg:gap-8">
+          {genres.map((genre) => (
+            <GenreCard
+              key={genre.id}
+              {...genre}
+            />
+          ))}
+        </div>
+      )}
       
       {/* Information Section */}
       <div className="mt-16 p-6 bg-gray-800/50 rounded-xl border border-gray-700/50">

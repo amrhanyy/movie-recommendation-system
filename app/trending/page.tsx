@@ -63,9 +63,11 @@ export default function TrendingPage() {
         </div>
 
         {error ? (
-          <div className="text-center py-12">
+          <div className="text-center py-12" role="alert">
             <p className="text-red-400">{error}</p>
           </div>
+        ) : movies.length === 0 ? (
+          <p className="text-center text-gray-400 py-12">No trending titles right now. Check back soon.</p>
         ) : (
           <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-6 list-none">
             {movies.map((movie) => (

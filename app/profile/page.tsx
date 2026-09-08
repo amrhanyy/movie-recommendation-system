@@ -1,6 +1,6 @@
 'use client'
 
-import React from 'react'
+import React, { useEffect } from 'react'
 import { useSession } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { Heart, ExternalLink } from 'lucide-react'
@@ -16,12 +16,17 @@ export default function ProfilePage() {
   const { data: session, status } = useSession()
   const router = useRouter()
 
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      router.push('/auth/signin')
+    }
+  }, [status, router])
+
   if (status === "loading") {
     return <LoadingSpinner message="Loading your profile..." />
   }
 
   if (!session) {
-    router.push('/auth/signin')
     return null
   }
 

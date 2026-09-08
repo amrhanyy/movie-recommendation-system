@@ -1,19 +1,21 @@
-export function Section({ 
-  children, 
-  title 
-}: { 
+import React from 'react';
+
+export function Section({
+  children,
+  title,
+}: {
   children: React.ReactNode
-  title?: string 
+  title?: string
 }) {
   return (
-    <div >
+    <section aria-label={title ?? 'Content section'}>
       {title && (
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-1 h-8 bg-cyan-500 rounded-full glow-cyan motion-safe:animate-pulse" />
+          <div aria-hidden="true" className="w-1 h-8 bg-cyan-500 rounded-full glow-cyan motion-safe:animate-pulse" />
           <h2 className="text-2xl font-bold text-white tracking-wider">{title.toUpperCase()}</h2>
         </div>
       )}
       {children}
-    </div>
+    </section>
   )
 }

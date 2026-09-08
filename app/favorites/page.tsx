@@ -8,9 +8,8 @@ import { toast } from 'react-hot-toast'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import PageWrapper from '@/components/PageWrapper'
 import { AuthCheck } from '@/components/AuthCheck'
-import { FavoriteGridItemCard } from '@/components/FavoriteGridItemCard'
-import { FavoriteDetailedItemCard } from '@/components/FavoriteDetailedItemCard'
-import { FavoriteCompactItemCard } from '@/components/FavoriteCompactItemCard'
+import { MediaCard } from '@/components/MediaCard'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 
 interface FavoriteItem {
   id: string
@@ -138,16 +137,17 @@ export default function FavoritesPage() {
   }, [searchQuery])
 
   const removeFromFavorites = async (itemId: number, type: string) => {
+    const previous = favorites
+    setFavorites(prev => prev.filter(item => !(item.itemId === itemId && item.type === type)))
     try {
       const response = await fetch(`/api/favorites?itemId=${itemId}&type=${type}`, {
         method: 'DELETE'
       })
       if (!response.ok) throw new Error('Failed to remove from favorites')
-      
-      setFavorites(prev => prev.filter(item => !(item.itemId === itemId && item.type === type)))
+
       toast.success('Removed from favorites')
-    } catch (error) {
-      console.error('Error removing from favorites:', error)
+    } catch (err) {
+      setFavorites(previous)
       toast.error('Failed to remove from favorites')
     }
   }
@@ -230,10 +230,12 @@ export default function FavoritesPage() {
           };
           
           return (
-            <FavoriteGridItemCard 
+            <MediaCard
               key={`${item.type}-${item.itemId}`}
-              item={itemData} 
+              item={itemData}
               onRemove={removeFromFavorites}
+              variant="grid"
+              accent="pink"
             />
           );
         })}
@@ -259,10 +261,12 @@ export default function FavoritesPage() {
           };
           
           return (
-            <FavoriteDetailedItemCard 
+            <MediaCard
               key={`${item.type}-${item.itemId}`}
-              item={itemData} 
+              item={itemData}
               onRemove={removeFromFavorites}
+              variant="detailed"
+              accent="pink"
             />
           );
         })}
@@ -288,10 +292,12 @@ export default function FavoritesPage() {
           };
           
           return (
-            <FavoriteCompactItemCard 
+            <MediaCard
               key={`${item.type}-${item.itemId}`}
-              item={itemData} 
+              item={itemData}
               onRemove={removeFromFavorites}
+              variant="compact"
+              accent="pink"
             />
           );
         })}
@@ -313,6 +319,37 @@ export default function FavoritesPage() {
           <div className="flex items-center gap-3">
             <div className="w-1 h-8 bg-pink-500 rounded-full glow-pink animate-pulse" />
             <h1 className="text-2xl font-bold text-white tracking-wider">MY FAVORITES</h1>
+            {favorites.length > 0 && (
+              <ConfirmDialog
+                trigger={
+                  <button
+                    type="button"
+                    className="ml-auto text-sm rounded-lg bg-gray-800 hover:bg-red-900/40 border border-gray-700 px-4 py-2 text-gray-300 hover:text-red-300 transition-colors"
+                  >
+                    Clear list
+                  </button>
+                }
+                title="Clear favorites?"
+                description={`This permanently removes all ${favorites.length} item${favorites.length === 1 ? '' : 's'} from your favorites. This cannot be undone.`}
+                confirmLabel="Clear all"
+                onConfirm={async () => {
+                  const previous = favorites
+                  setFavorites([])
+                  try {
+                    const results = await Promise.all(
+                      previous.map((item) =>
+                        fetch(`/api/favorites?itemId=${item.itemId}&type=${item.type}`, { method: 'DELETE' })
+                      )
+                    )
+                    if (results.some((r) => !r.ok)) throw new Error('clear-failed')
+                    toast.success('Favorites cleared')
+                  } catch {
+                    setFavorites(previous)
+                    toast.error('Could not clear favorites. Please try again.')
+                  }
+                }}
+              />
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
@@ -357,21 +394,26 @@ export default function FavoritesPage() {
               {/* Sort Dropdown */}
               <div className="relative">
                 <button
+                  type="button"
                   onClick={() => setIsFilterOpen(!isFilterOpen)}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-800/70 rounded-lg hover:bg-gray-700 transition-colors"
+                  aria-expanded={isFilterOpen}
+                  aria-haspopup="listbox"
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-800/70 rounded-lg hover:bg-gray-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-pink-500"
                 >
                   <span className="text-gray-200">Sort by: {sortOptions.find(opt => opt.value === sortBy)?.label}</span>
                   <ChevronDown className="w-4 h-4 text-gray-400" />
                 </button>
                 {isFilterOpen && (
-                  <div className="absolute top-full left-0 mt-2 w-48 py-2 bg-gray-800 rounded-lg border border-gray-700/50 shadow-xl z-10">
+                  <div role="listbox" aria-label="Sort favorites" className="absolute top-full left-0 mt-2 w-48 py-2 bg-gray-800 rounded-lg border border-gray-700/50 shadow-xl z-10">
                     {sortOptions.map((option) => (
                       <button
                         key={option.value}
+                        type="button"
+                        role="option"
+                        aria-selected={sortBy === option.value}
                         onClick={() => {
                           setSortBy(option.value)
                           setIsFilterOpen(false)
-                          toast.success(`Sorted by ${option.label}`)
                         }}
                         className={`w-full px-4 py-2 text-left hover:bg-gray-700/50 transition-colors
                           ${sortBy === option.value ? 'text-pink-400' : 'text-gray-300'}`}
@@ -385,9 +427,9 @@ export default function FavoritesPage() {
 
               {/* Sort Order Toggle */}
               <button
+                type="button"
                 onClick={() => {
                   setIsAscending(!isAscending)
-                  toast.success(isAscending ? "Sorted descending" : "Sorted ascending")
                 }}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors
                   ${isAscending 
@@ -401,12 +443,14 @@ export default function FavoritesPage() {
               </button>
 
               {/* View Mode Toggles */}
-              <div className="flex items-center bg-gray-800/70 rounded-lg border border-gray-700/50 ml-2">
+              <div className="flex items-center bg-gray-800/70 rounded-lg border border-gray-700/50 ml-2" role="group" aria-label="Favorites view mode">
                 <button
+                  type="button"
+                  aria-pressed={viewMode === 'grid' ? 'true' : 'false'}
+                  aria-label="Grid view"
                   onClick={() => {
                     if (viewMode !== 'grid') {
                       setViewMode('grid')
-                      toast.success("Grid view activated")
                     }
                   }}
                   className={`p-2 rounded-l-lg transition-colors
@@ -417,10 +461,12 @@ export default function FavoritesPage() {
                   <LayoutGrid className="w-5 h-5" />
                 </button>
                 <button
+                  type="button"
+                  aria-pressed={viewMode === 'detailed' ? 'true' : 'false'}
+                  aria-label="Detailed view"
                   onClick={() => {
                     if (viewMode !== 'detailed') {
                       setViewMode('detailed')
-                      toast.success("Detailed view activated")
                     }
                   }}
                   className={`p-2 transition-colors
@@ -431,10 +477,12 @@ export default function FavoritesPage() {
                   <MenuSquare className="w-5 h-5" />
                 </button>
                 <button
+                  type="button"
+                  aria-pressed={viewMode === 'compact' ? 'true' : 'false'}
+                  aria-label="Compact view"
                   onClick={() => {
                     if (viewMode !== 'compact') {
                       setViewMode('compact')
-                      toast.success("Compact view activated")
                     }
                   }}
                   className={`p-2 rounded-r-lg transition-colors

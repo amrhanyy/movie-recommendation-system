@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useSession } from 'next-auth/react'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import Link from 'next/link'
-import { GridItemCard } from './GridItemCard'
+import { MediaCard } from './MediaCard'
 
 type WatchlistItem = {
   _id: string
@@ -94,10 +94,12 @@ export default function Watchlist({ limit }: WatchlistProps) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
       {displayItems.map((item) => (
-        <GridItemCard 
+        <MediaCard
           key={item._id}
-          item={item} 
+          item={item}
           onRemove={removeFromWatchlist}
+          variant="grid"
+          accent="cyan"
         />
       ))}
     </div>

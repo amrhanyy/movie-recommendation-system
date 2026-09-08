@@ -12,7 +12,6 @@ import { AuthButton } from "../components/AuthButton"
 import { TrendingSection } from '@/components/TrendingSection'
 import LatestTrailers from '@/components/home/LatestTrailers'
 import { TopRatedMovies } from '@/components/TopRatedMovies'
-import { Section } from '@/components/Section'
 import { TopRatedTVShows } from '@/components/TopRatedTVShows'
 import { PopularCelebrities } from '@/components/PopularCelebrities'
 import { MoodBasedRecommendations } from '@/components/MoodBasedRecommendations'

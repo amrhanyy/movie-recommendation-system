@@ -3,6 +3,7 @@
 import React from 'react'
 import { useState, useEffect } from 'react'
 import { MessageSquare, Trash2, Clock, Calendar, Star, Search } from 'lucide-react'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 
 interface ChatSession {
   _id: string
@@ -81,8 +82,7 @@ export default function ChatList({
     })
   }
 
-  const handleDeleteChat = async (chatId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
+  const handleDeleteChat = async (chatId: string) => {
     await onDeleteChat(chatId)
     await fetchChats()
     onChatsUpdate()
@@ -155,13 +155,22 @@ export default function ChatList({
           </div>
         </div>
       </div>
-      <button
-        onClick={(e) => handleDeleteChat(chat._id, e)}
-        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 focus-visible:opacity-100 focus:opacity-100 min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 bg-gray-800/70 hover:bg-red-900/30 rounded-lg transition-all"
-        aria-label="Delete conversation"
-      >
-        <Trash2 className="w-3.5 h-3.5 text-gray-400 group-hover:text-red-400" />
-      </button>
+      <ConfirmDialog
+        trigger={
+          <button
+            type="button"
+            onClick={(e) => e.stopPropagation()}
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 focus-visible:opacity-100 focus:opacity-100 min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 bg-gray-800/70 hover:bg-red-900/30 rounded-lg transition-all"
+            aria-label="Delete conversation"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-gray-400 group-hover:text-red-400" />
+          </button>
+        }
+        title="Delete conversation?"
+        description="This permanently deletes this conversation. This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={() => handleDeleteChat(chat._id)}
+      />
     </div>
   )
   

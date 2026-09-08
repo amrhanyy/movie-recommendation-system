@@ -3,19 +3,14 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 
 // Map of language codes to their display names
+// M6 i18n honesty: only locales with a real translation catalog below are
+// listed. Additional display-name stubs were removed (no setLanguage call
+// site exists, and the app's html lang stays "en" until a real switch ships).
 export const LANGUAGES = {
   'en-US': 'English (US)',
   'es-ES': 'Spanish (Spain)',
   'fr-FR': 'French (France)',
   'de-DE': 'German (Germany)',
-  'it-IT': 'Italian (Italy)',
-  'ja-JP': 'Japanese (Japan)',
-  'ko-KR': 'Korean (Korea)',
-  'zh-CN': 'Chinese (Simplified)',
-  'pt-BR': 'Portuguese (Brazil)',
-  'ar-SA': 'Arabic (Saudi Arabia)',
-  'hi-IN': 'Hindi (India)',
-  'ru-RU': 'Russian (Russia)',
 }
 
 // Default translations for common UI elements

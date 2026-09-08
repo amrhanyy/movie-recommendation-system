@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import Link from 'next/link'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 
 /**
  * Privacy controls (R6):
@@ -166,13 +167,21 @@ export function PrivacySettings() {
       </div>
 
       <div className="border-t border-gray-700/50 pt-5 flex flex-wrap gap-3">
-        <button
-          onClick={clearHistory}
-          disabled={busy !== null}
-          className="text-sm rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 px-4 py-2 text-gray-200 disabled:opacity-50"
-        >
-          {busy === 'clear' ? 'Clearing…' : 'Clear viewing history'}
-        </button>
+        <ConfirmDialog
+          trigger={
+            <button
+              type="button"
+              disabled={busy !== null}
+              className="text-sm rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 px-4 py-2 text-gray-200 disabled:opacity-50"
+            >
+              {busy === 'clear' ? 'Clearing…' : 'Clear viewing history'}
+            </button>
+          }
+          title="Clear viewing history?"
+          description="This permanently deletes your viewing history in this app. This cannot be undone."
+          confirmLabel="Clear history"
+          onConfirm={clearHistory}
+        />
         <button
           onClick={exportData}
           disabled={busy !== null}

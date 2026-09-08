@@ -30,13 +30,15 @@ export function GenreGrid() {
         {genres.map((genre) => (
           <button
             key={genre.id}
+            type="button"
             onClick={() => router.push(`/genre/${genre.id}?type=movie&name=${genre.name}`)}
             className={`relative p-6 rounded-xl overflow-hidden group cursor-pointer
                      bg-gradient-to-br ${genre.color} backdrop-blur-sm
                      border border-gray-700/50 hover:border-cyan-500/50
-                     transition-all duration-300 hover:scale-105`}
+                     transition-all duration-300 hover:scale-105
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500`}
           >
-            <div className="text-3xl mb-2">{genre.icon}</div>
+            <div aria-hidden="true" className="text-3xl mb-2">{genre.icon}</div>
             <h3 className="text-sm font-medium text-white group-hover:text-cyan-400 
                         transition-colors duration-300">
               {genre.name}
