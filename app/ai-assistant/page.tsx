@@ -459,7 +459,7 @@ export default function AIAssistant() {
                 {/* Chat Container */}
                 <div className="flex-1 flex flex-col bg-gradient-to-b from-gray-800/60 to-gray-900/60 backdrop-blur-xl rounded-3xl border border-gray-700/50 overflow-hidden shadow-xl">
                   {/* Messages Area */}
-                  <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gradient-to-br from-transparent to-purple-900/5">
+                  <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gradient-to-br from-transparent to-purple-900/5" role="log" aria-label="Chat messages" aria-live="off">
                     {/* Empty chat state - intentionally left blank */}
                     
                     {/* Chat messages */}
@@ -509,7 +509,7 @@ export default function AIAssistant() {
                     
                     {/* AI Thinking indicator */}
                     {isLoading && (
-                      <div className="flex justify-start animate-fadeIn">
+                      <div className="flex justify-start animate-fadeIn" role="status" aria-live="polite" aria-label="AI is thinking">
                         <div className="max-w-[85%] rounded-2xl p-4 shadow-lg bg-gradient-to-br from-gray-700/50 to-gray-800/50 border border-gray-600/30">
                           <div className="flex items-center gap-2 mb-3">
                             <div className="w-7 h-7 rounded-full bg-cyan-500/20 flex items-center justify-center">
@@ -531,7 +531,11 @@ export default function AIAssistant() {
                   {/* Input Area */}
                   <div className="p-4 border-t border-gray-700/50 bg-gray-800/60 backdrop-blur-xl">
                     <form onSubmit={handleSubmit} className="relative">
+                      <label htmlFor="ai-assistant-message" className="sr-only">
+                        Ask about movies, TV shows, or recommendations
+                      </label>
                       <input
+                        id="ai-assistant-message"
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}

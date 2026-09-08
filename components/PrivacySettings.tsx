@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import Link from 'next/link'
 
@@ -190,7 +190,11 @@ export function PrivacySettings() {
           DELETE_MY_ACCOUNT.
         </p>
         <div className="flex flex-wrap items-center gap-3">
+          <label htmlFor="privacy-delete-confirm" className="sr-only">
+            Type DELETE_MY_ACCOUNT to confirm account deletion
+          </label>
           <input
+            id="privacy-delete-confirm"
             type="text"
             value={deleteConfirm}
             placeholder="Type DELETE_MY_ACCOUNT"

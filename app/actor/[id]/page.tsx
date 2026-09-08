@@ -204,10 +204,11 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                     .sort((a, b) => new Date(b.release_date).getTime() - new Date(a.release_date).getTime())
                     .slice(0, 8)
                     .map((movie, index) => (
-                      <div
+                      <Link
                         key={`movie-${movie.id}-${index}-${movie.character?.replace(/\s+/g, '')}`}
-                        className="group cursor-pointer"
-                        onClick={() => router.push(`/movie/${movie.id}`)}
+                        href={`/movie/${movie.id}`}
+                        aria-label={`View details for ${movie.title}`}
+                        className="group block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
                       >
                         <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                                     transform group-hover:scale-105 transition-all duration-300 
@@ -236,7 +237,7 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                         <p className="text-gray-400 text-xs">
                           {new Date(movie.release_date).getFullYear()}
                         </p>
-                      </div>
+                      </Link>
                     ))}
                 </div>
               </div>
@@ -254,10 +255,11 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                     .sort((a, b) => new Date(b.first_air_date || '').getTime() - new Date(a.first_air_date || '').getTime())
                     .slice(0, 8)
                     .map((show, index) => (
-                      <div
+                      <Link
                         key={`tv-${show.id}-${index}-${show.character?.replace(/\s+/g, '')}`}
-                        className="group cursor-pointer"
-                        onClick={() => router.push(`/tv/${show.id}`)}
+                        href={`/tv/${show.id}`}
+                        aria-label={`View details for ${show.name}`}
+                        className="group block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
                       >
                         <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                                     transform group-hover:scale-105 transition-all duration-300 
@@ -284,7 +286,7 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                         <p className="text-gray-400 text-xs">
                           {show.first_air_date ? new Date(show.first_air_date).getFullYear() : 'N/A'}
                         </p>
-                      </div>
+                      </Link>
                     ))}
                 </div>
               </div>

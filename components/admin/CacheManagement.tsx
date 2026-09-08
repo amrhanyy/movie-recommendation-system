@@ -268,7 +268,11 @@ export function CacheManagement() {
           
           <div className="flex gap-3">
             <div className="flex items-center space-x-2">
+              <label htmlFor="cache-pattern" className="sr-only">
+                Cache key pattern
+              </label>
               <Input
+                id="cache-pattern"
                 className="bg-gray-900/50 border-gray-700 focus:border-cyan-500 focus:ring-cyan-500/20 text-gray-300 w-48"
                 placeholder="Pattern (e.g. movie:*)"
                 value={keyPattern}

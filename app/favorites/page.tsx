@@ -325,6 +325,9 @@ export default function FavoritesPage() {
                   <Search className="w-5 h-5 text-gray-400 group-focus-within:text-pink-400 transition-colors duration-200" />
                 )}
               </div>
+              <label htmlFor="favorites-search" className="sr-only">
+                Search your favorites
+              </label>
               <input
                 id="favorites-search"
                 type="text"

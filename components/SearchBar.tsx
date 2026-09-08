@@ -172,16 +172,23 @@ export function SearchBar() {
   // Determine which items to show in dropdown
   const dropdownItems = query ? suggestions : recentSearches;
   const showDropdown = isOpen && (dropdownItems.length > 0 || (!query && trendingSuggestions.length > 0));
+  const activeItem = selectedIndex > -1 ? dropdownItems[selectedIndex] : undefined;
+  const activeDescendantId = activeItem ? `search-option-${activeItem.media_type}-${activeItem.id}` : undefined;
 
   return (
     <div className="relative w-full" ref={searchRef}>
       <div className="relative">
-        <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300 ${isFocused ? 'text-cyan-400' : 'text-gray-400'}`} />
+        <Search aria-hidden="true" className={`absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300 ${isFocused ? 'text-cyan-400' : 'text-gray-400'}`} />
         <input
           ref={inputRef}
           id="global-search"
           name="search"
           type="search"
+          role="combobox"
+          aria-expanded={showDropdown}
+          aria-controls="global-search-listbox"
+          aria-activedescendant={activeDescendantId}
+          aria-autocomplete="list"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -205,7 +212,7 @@ export function SearchBar() {
           {query && !isLoading && (
             <button 
               onClick={clearInput}
-              className="p-1 rounded-full hover:bg-gray-700/50 transition-colors"
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-700/50 transition-colors"
               aria-label="Clear search"
             >
               <X className="w-4 h-4 text-gray-400 hover:text-white" />
@@ -220,6 +227,9 @@ export function SearchBar() {
 
       {showDropdown && (
         <div 
+          id="global-search-listbox"
+          role="listbox"
+          aria-label="Search suggestions"
           className="absolute w-full mt-2 bg-gray-800/95 backdrop-blur-xl rounded-xl 
                    shadow-xl z-[60] border border-gray-700/50 overflow-hidden
                    transition-all duration-200 origin-top"
@@ -233,7 +243,10 @@ export function SearchBar() {
             suggestions.length > 0 ? (
               suggestions.map((item, index) => (
                 <div
+                  id={`search-option-${item.media_type}-${item.id}`}
                   key={item.id}
+                  role="option"
+                  aria-selected={index === selectedIndex}
                   onClick={() => handleResultClick(item)}
                   className={`flex items-center gap-4 p-3 transition-colors cursor-pointer
                             ${index === selectedIndex ? 'bg-cyan-500/10' : 'hover:bg-gray-700/50'}
@@ -292,7 +305,10 @@ export function SearchBar() {
                   </div>
                   {recentSearches.map((item, index) => (
                     <div
+                      id={`search-option-${item.media_type}-${item.id}`}
                       key={item.id}
+                      role="option"
+                      aria-selected={index === selectedIndex}
                       onClick={() => handleResultClick(item)}
                       className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors
                                 ${index === selectedIndex ? 'bg-cyan-500/10' : 'hover:bg-gray-700/50'}`}
@@ -323,7 +339,7 @@ export function SearchBar() {
                       </div>
                       <button
                         onClick={(e) => clearRecentSearch(e, item.id)}
-                        className="p-1 rounded-full hover:bg-gray-600/50"
+                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-600/50"
                         aria-label="Remove from recent searches"
                       >
                         <X className="w-3 h-3 text-gray-400 hover:text-white" />
@@ -378,7 +394,6 @@ export function SearchBar() {
               )}
             </>
           )}
-          
           {/* Search tips at the bottom */}
           <div className="p-2 bg-gray-850 border-t border-gray-700/50">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400 justify-center">

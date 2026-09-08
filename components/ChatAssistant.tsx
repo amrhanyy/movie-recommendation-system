@@ -1,5 +1,5 @@
 "use client"
-import { useState, useRef, useEffect, type KeyboardEvent } from "react"
+import React, { useState, useRef, useEffect, type KeyboardEvent } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -91,9 +91,9 @@ export function ChatAssistant() {
       </CardHeader>
       <CardContent className="flex-1 overflow-y-auto p-4 space-y-4 relative">
         <div className="absolute inset-0 bg-gray-900/20 backdrop--sm rounded-xl" />
-        {messages.map((message) => (
+        {messages.map((message, index) => (
           <div
-            key={message.timestamp}
+            key={`${message.isUser ? 'user' : 'assistant'}-${index}-${message.timestamp}`}
             className={`flex ${message.isUser ? "justify-end" : "justify-start"}`}
           >
             <div
@@ -110,19 +110,23 @@ export function ChatAssistant() {
           </div>
         ))}
         {isLoading && (
-          <div className="flex justify-center">
+          <div className="flex justify-center" role="status" aria-live="polite">
             <Loader2 className="animate-spin h-6 w-6 text-cyan-500" />
           </div>
         )}
         {error && (
-          <div className="text-red-400 text-sm text-center p-2">
+          <div role="alert" aria-live="assertive" className="text-red-400 text-sm text-center p-2">
             {error}
           </div>
         )}
         <div ref={messagesEndRef} />
       </CardContent>
       <div className="p-4 border-t border-gray-700/50 flex gap-2">
+        <label htmlFor="chat-assistant-input" className="sr-only">
+          Ask me anything
+        </label>
         <Input
+          id="chat-assistant-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}

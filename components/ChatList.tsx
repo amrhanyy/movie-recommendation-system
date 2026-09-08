@@ -157,7 +157,7 @@ export default function ChatList({
       </div>
       <button
         onClick={(e) => handleDeleteChat(chat._id, e)}
-        className="opacity-0 group-hover:opacity-100 p-1.5 bg-gray-800/70 hover:bg-red-900/30 rounded-lg transition-all"
+        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 focus-visible:opacity-100 focus:opacity-100 min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 bg-gray-800/70 hover:bg-red-900/30 rounded-lg transition-all"
         aria-label="Delete conversation"
       >
         <Trash2 className="w-3.5 h-3.5 text-gray-400 group-hover:text-red-400" />
@@ -204,9 +204,14 @@ export default function ChatList({
     <div className="flex-1 overflow-y-auto">
       <div className="p-3 pb-0">
         <div className="relative mb-3">
+          <label htmlFor="chat-history-search" className="sr-only">
+            Search conversations
+          </label>
           <input
             type="text"
             value={searchQuery}
+            id="chat-history-search"
+            aria-label="Search conversations"
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search conversations..."
             className="w-full bg-gray-900/50 text-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm

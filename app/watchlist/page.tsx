@@ -233,6 +233,9 @@ export default function WatchlistPage() {
                         <Search className="w-5 h-5 text-gray-400 group-focus-within:text-cyan-400 transition-colors duration-200" />
                       )}
                     </div>
+                    <label htmlFor="watchlist-search" className="sr-only">
+                      Search your watchlist
+                    </label>
                     <input
                       id="watchlist-search"
                       type="text"

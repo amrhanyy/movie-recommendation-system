@@ -236,7 +236,11 @@ export function UserManagement() {
       {/* Search and actions */}
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-center mb-6 bg-gray-800/30 backdrop-blur-sm p-4 rounded-lg border border-gray-700/50">
         <form onSubmit={handleSearch} className="w-full max-w-sm flex gap-2">
+          <label htmlFor="admin-users-search" className="sr-only">
+            Search users
+          </label>
           <Input
+            id="admin-users-search"
             placeholder="Search users..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
