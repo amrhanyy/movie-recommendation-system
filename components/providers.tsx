@@ -3,6 +3,7 @@
 import { SessionProvider } from "next-auth/react"
 import { LanguageProvider } from "@/contexts/LanguageContext"
 import { WatchlistProvider } from "@/contexts/WatchlistContext"
+import { FavoritesProvider } from "@/contexts/FavoritesContext"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -13,7 +14,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     >
       <LanguageProvider>
         <WatchlistProvider>
-          {children}
+          <FavoritesProvider>
+            {children}
+          </FavoritesProvider>
         </WatchlistProvider>
       </LanguageProvider>
     </SessionProvider>

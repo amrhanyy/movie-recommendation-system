@@ -180,6 +180,10 @@ export async function POST(request: NextRequest) {
           message: "Application cache cleared",
           deleted: result.deleted,
           remaining: result.remaining,
+          degraded: result.degraded,
+          reason: result.reason,
+          clearedMemory: result.clearedMemory,
+          complete: result.complete,
         },
         { headers: noStoreHeaders }
       );
@@ -230,6 +234,10 @@ export async function DELETE(request: NextRequest) {
         message: "Application cache cleared",
         deleted: result.deleted,
         remaining: result.remaining,
+        degraded: result.degraded,
+        reason: result.reason,
+        clearedMemory: result.clearedMemory,
+        complete: result.complete,
       },
       { headers: noStoreHeaders }
     );

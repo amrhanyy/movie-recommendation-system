@@ -285,6 +285,7 @@ describe('M4 read caps + degraded clear', () => {
 
   it('recs prompt built from <=200 history titles', async () => {
     const historyDocs = Array.from({ length: 250 }, (_, i) => ({ title: `H${i}`, type: 'movie' }));
+    const findCalls: unknown[][] = [];
     const mkChain = (docs: unknown[]) => ({
       sort: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
@@ -297,7 +298,10 @@ describe('M4 read caps + degraded clear', () => {
     });
     const historyChain = mkChain(historyDocs.slice(0, 200));
     const { History } = await import('@/lib/models/History');
-    (History.find as ReturnType<typeof vi.fn>).mockReturnValue(historyChain);
+    (History.find as ReturnType<typeof vi.fn>).mockImplementation((...args: unknown[]) => {
+      findCalls.push(args);
+      return historyChain;
+    });
     const { WatchlistModel } = await import('@/lib/models/WatchlistModel');
     (WatchlistModel.find as ReturnType<typeof vi.fn>).mockReturnValue(mkChain([{ title: 'W', type: 'movie' }]));
     const { FavoritesModel } = await import('@/lib/models/FavoritesModel');
@@ -306,8 +310,9 @@ describe('M4 read caps + degraded clear', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')));
     const { GET } = await import('@/app/api/ai-recommendations/route');
     await GET(new NextRequest('http://localhost/api/ai-recommendations'));
-    expect((History.find as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect(findCalls.length).toBe(1);
     expect(historyChain.limit).toHaveBeenCalledWith(200);
+    expect(historyChain.select).toHaveBeenCalledWith({ title: 1, type: 1, _id: 0 });
   });
 
   it('redis-null clear reports degraded true + complete false', async () => {
