@@ -58,6 +58,12 @@ export interface CacheClearResult {
   remaining: boolean;
   /** true when clear completed all matching keys (within limits) */
   complete: boolean;
+  /** true when Redis was unavailable and only memory was cleared */
+  degraded: boolean;
+  /** machine-readable cause when degraded */
+  reason?: string;
+  /** memory-cache entries cleared in the degraded path */
+  clearedMemory?: number;
 }
 
 /**
@@ -251,14 +257,14 @@ export class RedisCache {
     maxDelete: number = MAX_DELETE_KEYS_PER_REQUEST
   ): Promise<CacheClearResult> {
     // Always clear matching memory-cache entries first (prefix-scoped)
-    this.clearMemoryPrefix(match);
+    const clearedMemory = this.clearMemoryPrefix(match);
 
     const redisResult = await this.safeRedisOp<CacheClearResult>(async (redis) => {
       const keys = await this.scanNamespacedKeys(redis, match, maxDelete);
       const totalFound = keys.length;
 
       if (totalFound === 0) {
-        return { deleted: 0, remaining: false, complete: true };
+        return { deleted: 0, remaining: false, complete: true, degraded: false };
       }
 
       // Delete in bounded batches
@@ -273,6 +279,7 @@ export class RedisCache {
         deleted,
         remaining: totalFound >= maxDelete,
         complete: totalFound < maxDelete,
+        degraded: false,
       };
     });
 
@@ -280,8 +287,8 @@ export class RedisCache {
       return redisResult;
     }
 
-    // Redis unavailable: report memory-fallback deletion result
-    return { deleted: 0, remaining: false, complete: true };
+    // Redis unavailable: memory-fallback deletion result (degraded, explicit)
+    return { deleted: 0, remaining: false, complete: false, degraded: true, reason: "redis-unavailable", clearedMemory };
   }
 
   /**

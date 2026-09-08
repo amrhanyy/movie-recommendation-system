@@ -22,6 +22,7 @@ export async function GET(request: NextRequest) {
 
     const items = await FavoritesModel.find({ userId: authResult.user.email })
       .sort({ createdAt: -1 })
+      .limit(MAX_LIST_ITEMS)
       .lean();
 
     return NextResponse.json(items);
