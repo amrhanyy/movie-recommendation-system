@@ -60,8 +60,8 @@
 
 - `fdf960b` fix(a11y): keyboard activation, labels, listbox semantics, live regions — 10 files, +69/−21.
 - `515db85` fix(ux): home/genre silent failures, retry wiring, skeleton gating, mobile hero — 2 files, +103/−28.
-- `4dc9d58` perf(ui): LCP priority, double-fetch kill, stable keys + callbacks + phase report — 4 files, +402/−14 (incl. this file + `tests/m5-a11y.test.tsx`).
-- Push: `git push origin main` exit 0 (`1aecc88..4dc9d58 main -> main`).
+- `99bb4a0` perf(ui): LCP priority, double-fetch kill, stable keys + callbacks + phase report — 4 files, +403/−14 (incl. this file + `tests/m5-a11y.test.tsx`).
+- Push: `git push origin main` exit 0 (`1aecc88..99bb4a0 main -> main`).
 - CI: `gh run list` reachable; latest run `34278092089` = completed/failure in ~4s with all 4 jobs blocked: "account is locked due to a billing issue" → **PENDING-OWNER** (known billing lock; local `lint`/`typecheck`/`test`/`build` all exit 0 as recorded above; nothing fabricated).
 
 ## 7. Owner smoke checklist
