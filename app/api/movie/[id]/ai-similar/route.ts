@@ -259,7 +259,7 @@ export async function GET(
         try {
           // Search for the movie in TMDB
           const searchResponse = await fetch(
-            `${BASE_URL}/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(movie.title)}&year=${movie.year || ''}`,
+            `${BASE_URL}/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(movie.title)}&year=${encodeURIComponent(movie.year || '')}`,
             { next: { revalidate: 3600 } }
           );
           

@@ -40,7 +40,7 @@ export const listItemSchema = z
     itemId: tmdbIdSchema,
     type: mediaTypeStrictSchema,
     title: z.string().min(1).max(MAX_TITLE_LENGTH),
-    posterPath: z.string().max(MAX_POSTER_PATH_LENGTH).nullable().optional(),
+    posterPath: z.string().regex(/^\/[A-Za-z0-9/._-]*$/).max(MAX_POSTER_PATH_LENGTH).nullable().optional(),
   })
   .strict();
 
@@ -51,7 +51,7 @@ export const historyItemSchema = z
     itemId: tmdbIdSchema,
     type: mediaTypeSchema,
     title: z.string().min(1).max(MAX_TITLE_LENGTH),
-    posterPath: z.string().max(MAX_POSTER_PATH_LENGTH).nullable().optional(),
+    posterPath: z.string().regex(/^\/[A-Za-z0-9/._-]*$/).max(MAX_POSTER_PATH_LENGTH).nullable().optional(),
   })
   .strict();
 
