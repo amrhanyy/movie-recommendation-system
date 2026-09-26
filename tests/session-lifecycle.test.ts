@@ -235,6 +235,78 @@ describe('W1-001 requireUser revocation enforcement', () => {
   });
 });
 
+describe('SESSION-001 tryRequireUser revocation enforcement', () => {
+  function optionalSessionFor(jti: string | undefined) {
+    mocks.getServerSession.mockResolvedValue({
+      user: {
+        id: '507f1f77bcf86cd799439011',
+        email: 'test@example.com',
+        name: 'Test User',
+        role: 'user',
+      },
+      ...(jti === undefined ? {} : { jti }),
+    });
+  }
+
+  it('returns null for a revoked jti before any User lookup', async () => {
+    optionalSessionFor('revoked-jti');
+    mocks.revokedExists.mockResolvedValue({ _id: 'revoked' });
+    const { tryRequireUser } = await import('@/lib/security/auth');
+    const result = await tryRequireUser();
+    expect(result).toBeNull();
+    expect(mocks.revokedExists).toHaveBeenCalledWith({ jti: 'revoked-jti' });
+    expect(mocks.userFindOne).not.toHaveBeenCalled();
+  });
+
+  it('resolves a valid non-revoked optional session', async () => {
+    optionalSessionFor('live-jti');
+    mocks.revokedExists.mockResolvedValue(null);
+    findOneLean(dbUser());
+    const { tryRequireUser } = await import('@/lib/security/auth');
+    const result = await tryRequireUser();
+    expect(result).toMatchObject({ email: 'test@example.com', role: 'user' });
+    expect(mocks.userFindOne).toHaveBeenCalled();
+  });
+
+  it('returns null when no session is present', async () => {
+    mocks.getServerSession.mockResolvedValue(null);
+    const { tryRequireUser } = await import('@/lib/security/auth');
+    const result = await tryRequireUser();
+    expect(result).toBeNull();
+    expect(mocks.connectToMongoDB).not.toHaveBeenCalled();
+  });
+
+  it('returns null for an incomplete optional session without an email', async () => {
+    mocks.getServerSession.mockResolvedValue({
+      user: { id: '507f1f77bcf86cd799439011', email: '', role: 'user' },
+    });
+    const { tryRequireUser } = await import('@/lib/security/auth');
+    const result = await tryRequireUser();
+    expect(result).toBeNull();
+    expect(mocks.connectToMongoDB).not.toHaveBeenCalled();
+    expect(mocks.revokedExists).not.toHaveBeenCalled();
+    expect(mocks.userFindOne).not.toHaveBeenCalled();
+  });
+
+  it('resolves a pre-rollout session without a jti (requireUser parity)', async () => {
+    optionalSessionFor(undefined);
+    findOneLean(dbUser());
+    const { tryRequireUser } = await import('@/lib/security/auth');
+    const result = await tryRequireUser();
+    expect(result).toMatchObject({ email: 'test@example.com' });
+    expect(mocks.revokedExists).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the revocation store is unavailable', async () => {
+    optionalSessionFor('uncertain-jti');
+    mocks.revokedExists.mockRejectedValueOnce(new Error('store unavailable'));
+    const { tryRequireUser } = await import('@/lib/security/auth');
+    const result = await tryRequireUser();
+    expect(result).toBeNull();
+    expect(mocks.userFindOne).not.toHaveBeenCalled();
+  });
+});
+
 describe('W1-003 jwt fail-closed', () => {
   it('returns the previous token unchanged when the DB lookup throws and an id exists', async () => {
     const { authOptions } = await import('@/lib/auth');

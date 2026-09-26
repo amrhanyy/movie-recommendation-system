@@ -117,15 +117,15 @@ export function TopRatedTVShows() {
                   <button
                     type="button"
                     onClick={(e) => handleWatchlistToggle(show, e)}
-                    aria-pressed={isInWatchlist(show.id)}
-                    aria-label={isInWatchlist(show.id) ? `Remove ${show.name} from watchlist` : `Add ${show.name} to watchlist`}
+                    aria-pressed={isInWatchlist('tv', show.id)}
+                    aria-label={isInWatchlist('tv', show.id) ? `Remove ${show.name} from watchlist` : `Add ${show.name} to watchlist`}
                     className="group/tooltip absolute top-2 right-2 p-2 rounded-full
                             bg-black/50 backdrop-blur-sm border border-gray-700/50
                             text-white hover:bg-black/70 hover:scale-110
                             transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                   >
                     <Bookmark
-                      className={`w-4 h-4 ${isInWatchlist(show.id) ? 'fill-white' : ''}`}
+                      className={`w-4 h-4 ${isInWatchlist('tv', show.id) ? 'fill-white' : ''}`}
                     />
                   </button>
                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent

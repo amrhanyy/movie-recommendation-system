@@ -172,15 +172,15 @@ export function ForYouSection() {
                 <button
                   type="button"
                   onClick={(e) => handleWatchlistToggle(item, e)}
-                  aria-pressed={isInWatchlist(item.id)}
-                  aria-label={isInWatchlist(item.id) ? `Remove ${item.title || 'item'} from watchlist` : `Add ${item.title || 'item'} to watchlist`}
+                  aria-pressed={isInWatchlist(item.media_type, item.id)}
+                  aria-label={isInWatchlist(item.media_type, item.id) ? `Remove ${item.title || 'item'} from watchlist` : `Add ${item.title || 'item'} to watchlist`}
                   className="absolute top-2 right-2 p-2 rounded-full
                           bg-black/50 backdrop-blur-sm border border-gray-700/50
                           text-white hover:bg-black/70 hover:scale-110
                           transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                 >
                   <Bookmark
-                    className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
+                    className={`w-4 h-4 ${isInWatchlist(item.media_type, item.id) ? 'fill-white' : ''}`}
                   />
                 </button>
                 <div

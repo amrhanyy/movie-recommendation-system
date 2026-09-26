@@ -51,8 +51,9 @@ const getEndpoint = (filter: TrailerFilter) => {
 
 export async function GET(request: NextRequest) {
   // Rate limit public TMDB proxy (M-03) — strict limit: this route fans out
-  // to 1 + up to 10 upstream calls per request
-  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxyStrict);
+  // to 1 + up to 10 upstream calls per request. AVAIL-001: dedicated
+  // per-route bucket so genres traffic cannot exhaust the trailers budget.
+  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxyTrailers);
   if (rateLimitResponse) {
     return rateLimitResponse;
   }

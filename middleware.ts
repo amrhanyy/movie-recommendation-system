@@ -53,6 +53,13 @@ export async function middleware(request: NextRequest) {
   // Protect API routes (middleware is defense-in-depth only;
   // every API handler must also call requireSession/requireAdmin)
   if (request.nextUrl.pathname.startsWith('/api/')) {
+    // Sensitive nested leaf that lives under the public /api/movie/ prefix.
+    // CONFIG-001: /api/movie/[id]/ai-similar is a requireUser (Gemini) route,
+    // so it is excluded from the public /api/movie/ carve-out and protected.
+    // Exact shape match (no substring over-deny of other routes).
+    const isSensitiveMovieLeaf =
+      request.nextUrl.pathname.startsWith('/api/movie/') &&
+      request.nextUrl.pathname.endsWith('/ai-similar')
     // Except for public APIs
     if (
       !request.nextUrl.pathname.startsWith('/api/auth') &&
@@ -61,7 +68,10 @@ export async function middleware(request: NextRequest) {
       !request.nextUrl.pathname.startsWith('/api/trending') &&
       !request.nextUrl.pathname.startsWith('/api/genres') &&
       !request.nextUrl.pathname.startsWith('/api/genre/') &&
-      !request.nextUrl.pathname.startsWith('/api/movie/') &&
+      !(
+        request.nextUrl.pathname.startsWith('/api/movie/') &&
+        !isSensitiveMovieLeaf
+      ) &&
       !request.nextUrl.pathname.startsWith('/api/tv/') &&
       !request.nextUrl.pathname.startsWith('/api/actor/') &&
       !request.nextUrl.pathname.startsWith('/api/celebrities') &&
@@ -129,5 +139,9 @@ export const config = {
     '/api/users/:path*',
     '/api/users',
     '/api/admin/:path*',
+    // CONFIG-001: sensitive nested leaf under the public /api/movie/ prefix
+    // (Gemini route; requireUser at handler). Matched so the middleware's
+    // early 401 defense-in-depth reaches it; handler remains authoritative.
+    '/api/movie/:id/ai-similar',
   ],
 }

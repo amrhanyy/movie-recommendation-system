@@ -154,9 +154,13 @@ export async function requireUser(): Promise<AuthResult | AuthDenied> {
 /**
  * Optional-session variant of requireUser for public routes with
  * personalization (e.g. time-based movies). Standalone: fresh-DB existence
- * check, no dependency on requireUser internals (Worker 2 owns revocation).
- * Returns the fresh-DB user, or null when the session is absent/invalid or
- * the DB user is gone (deleted/revoked/stale). Never throws, never logs PII.
+ * check, no dependency on requireUser internals.
+ * Returns the fresh-DB user, or null when the session is absent/invalid, the
+ * session's jti is revoked (SESSION-001: mirrors requireUser's W1-001
+ * blocklist check — an incomplete session without a jti is tolerated with
+ * pre-rollout parity), or the DB user is gone (deleted/stale). Never throws,
+ * never logs PII. Revocation uncertainty (store error) yields null — the
+ * public route then serves the unpersonalized base.
  */
 export async function tryRequireUser(): Promise<AuthenticatedUser | null> {
   try {
@@ -165,6 +169,15 @@ export async function tryRequireUser(): Promise<AuthenticatedUser | null> {
     if (!email) return null;
 
     await connectToMongoDB();
+
+    // W1-001/SESSION-001: server-side revocation for the optional path.
+    // Indexed exists() only — no token/PII logged, no body changes.
+    const sessionJti = session.jti;
+    if (typeof sessionJti === "string" && sessionJti.length > 0) {
+      const revoked = await RevokedSession.exists({ jti: sessionJti });
+      if (revoked) return null;
+    }
+
     const dbUser = await User.findOne(
       { email },
       { role: 1, email: 1, name: 1, image: 1, preferences: 1 }

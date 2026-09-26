@@ -91,6 +91,14 @@ body {
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
     --radius: 0.5rem;
+    /* M7 design tokens: canonical accent + card radius. Tailwind maps these
+       as `brand-cyan`, `brand-pink`, `rounded-card` (see tailwind.config.ts).
+       Scope is intentionally tight: new code should use the tokens; existing
+       cyan-500/pink-500/rounded-xl call sites are left untouched because
+       frozen suites (m5-a11y, m6-consistency) assert those literals. */
+    --color-accent-cyan: #06b6d4;
+    --color-accent-pink: #ec4899;
+    --radius-card: 0.75rem;
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;

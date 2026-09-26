@@ -45,28 +45,28 @@ function jsonResponse(status: number, body: unknown = []) {
   });
 }
 
-/** Renders N independent consumers that all read item 42. */
+/** Renders N independent consumers that all read movie item 42. */
 function MultiProbe({ count }: { count: number }) {
   return (
     <>
       {Array.from({ length: count }).map((_, i) => (
-        <MemberProbe key={i} id={42} testId={`probe-${i}`} />
+        <MemberProbe key={i} id={42} type="movie" testId={`probe-${i}`} />
       ))}
     </>
   );
 }
 
-function MemberProbe({ id, testId }: { id: number; testId: string }) {
+function MemberProbe({ id, type, testId }: { id: number; type: 'movie' | 'tv'; testId: string }) {
   const { isInWatchlist } = useWatchlistContext();
   return (
-    <span data-testid={testId}>{isInWatchlist(id) ? 'in' : 'out'}</span>
+    <span data-testid={testId}>{isInWatchlist(type, id) ? 'in' : 'out'}</span>
   );
 }
 
-/** A consumer with a real toggle button for item 500. */
+/** A consumer with a real toggle button for movie item 500. */
 function ToggleProbe() {
   const { isInWatchlist, toggleWatchlist } = useWatchlistContext();
-  const inList = isInWatchlist(500);
+  const inList = isInWatchlist('movie', 500);
   return (
     <div>
       <span data-testid="opt-probe">{inList ? 'in' : 'out'}</span>
@@ -94,7 +94,7 @@ describe('WatchlistContext', () => {
   });
 
   it('fetches /api/watchlist exactly once even with many consumers (no redundant fetches)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, [{ itemId: 42 }, { itemId: 7 }]));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, [{ itemId: 42, type: 'movie' }, { itemId: 7, type: 'tv' }]));
     vi.stubGlobal('fetch', fetchMock);
 
     render(
@@ -122,7 +122,7 @@ describe('WatchlistContext', () => {
 
     render(
       <WatchlistProvider>
-        <MemberProbe id={42} testId="probe-0" />
+        <MemberProbe id={42} type="movie" testId="probe-0" />
       </WatchlistProvider>
     );
 
@@ -138,7 +138,7 @@ describe('WatchlistContext', () => {
     // Initial list load succeeds; the subsequent add rejects.
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(200, [{ itemId: 42 }]))
+      .mockResolvedValueOnce(jsonResponse(200, [{ itemId: 42, type: 'movie' }]))
       .mockRejectedValueOnce(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -163,7 +163,7 @@ describe('WatchlistContext', () => {
 
   it('issues a DELETE for removal when the item is already in the watchlist', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
-      if (url === '/api/watchlist') return jsonResponse(200, [{ itemId: 500 }]);
+      if (url === '/api/watchlist') return jsonResponse(200, [{ itemId: 500, type: 'movie' }]);
       return jsonResponse(200, {});
     });
     vi.stubGlobal('fetch', fetchMock);

@@ -87,7 +87,7 @@ export function SearchBar() {
   useEffect(() => {
     if (debouncedQuery.length > 2) {
       setIsLoading(true)
-      fetch(`/api/search?query=${debouncedQuery}`)
+      fetch(`/api/search?query=${encodeURIComponent(debouncedQuery)}`)
         .then(res => res.json())
         .then(data => {
           setSuggestions(data.results.slice(0, 6))

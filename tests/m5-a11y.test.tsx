@@ -186,6 +186,9 @@ describe('M5 (d) labels resolve for labelled inputs', () => {
         return Promise.resolve(jsonResponse(200, { keys: [] }));
       }
       if (String(url).startsWith('/api/user')) return Promise.resolve(jsonResponse(200, { preferences: {} }));
+      if (String(url).startsWith('/api/chat-history/list')) {
+        return Promise.resolve(jsonResponse(200, []));
+      }
       return Promise.resolve(jsonResponse(200, {}));
     });
     vi.stubGlobal('fetch', fetchMock);

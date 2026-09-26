@@ -26,6 +26,21 @@ import {
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 
+// Projected owned-list document (typed lean). `itemId` is the canonical model
+// field; `tmdbId` is retained only as a read-only legacy fallback (same
+// pattern as app/api/movies/time-based/route.ts). Neither is ever written back.
+interface OwnedListItem {
+  itemId?: number;
+  tmdbId?: number;
+  title: string;
+  type: 'movie' | 'tv';
+}
+
+// REL-003: deterministic composite key so same-title items still order stably.
+function ownedSortKey(item: { type: string; title: string; id?: number }): string {
+  return `${item.type}|${item.id ?? 'na'}|${item.title}`;
+}
+
 /** Safely read a bounded upstream error body for server logs (never client). */
 async function readUpstreamErrorBody(response: Response): Promise<string> {
   try {
@@ -154,10 +169,12 @@ export async function GET(request: NextRequest) {
     await connectToMongoDB();
 
     // Fetch user's data (bounded: recs prompt built from <=200 history titles)
+    // REL-003: owned lists must expose the stable identifier (canonical itemId,
+    // legacy tmdbId fallback) for ID-based exclusion and precise cache hashing.
     const [history, watchlist, favorites] = await Promise.all([
       History.find({ userId: authResult.user.email }).sort({ viewedAt: -1 }).limit(200).select({ title: 1, type: 1, _id: 0 }),
-      WatchlistModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }).limit(500).select({ title: 1, type: 1, _id: 0 }),
-      FavoritesModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }).limit(500).select({ title: 1, type: 1, _id: 0 })
+      WatchlistModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }).limit(500).select({ itemId: 1, tmdbId: 1, title: 1, type: 1, _id: 0 }).lean<OwnedListItem[]>(),
+      FavoritesModel.find({ userId: authResult.user.email }).sort({ createdAt: -1 }).limit(500).select({ itemId: 1, tmdbId: 1, title: 1, type: 1, _id: 0 }).lean<OwnedListItem[]>()
     ]);
 
     // Check if user has added content to watchlist or favorites
@@ -178,10 +195,13 @@ export async function GET(request: NextRequest) {
     };
 
     // Store normalized titles and original items
+    // REL-003: effective identifier is canonical-first (itemId) with the
+    // read-only legacy tmdbId fallback; undefined when neither is present,
+    // in which case the item still participates in title-based exclusion.
     const userContentTitles = new Set();
     const userContentItems = [
-      ...watchlist.map(w => ({ title: w.title, type: w.type, id: w.tmdbId })),
-      ...favorites.map(f => ({ title: f.title, type: f.type, id: f.tmdbId }))
+      ...watchlist.map(w => ({ title: w.title, type: w.type, id: w.itemId ?? w.tmdbId })),
+      ...favorites.map(f => ({ title: f.title, type: f.type, id: f.itemId ?? f.tmdbId }))
     ];
 
     // Add all possible variations of titles to the set
@@ -201,9 +221,12 @@ export async function GET(request: NextRequest) {
     });
 
     // W3-006c: compute content hash for cache key
+    // REL-003: the effective identifier is part of the deterministic snapshot
+    // (type|id|title, missing id -> 'na') so same-owned-set => same key,
+    // different identifiers => different keys. Old keys expire via TTL (3600s).
     const sortedItems = [...userContentItems]
-      .sort((a, b) => a.title.localeCompare(b.title))
-      .map(item => `${item.type}:${item.title}`)
+      .sort((a, b) => ownedSortKey(a).localeCompare(ownedSortKey(b)))
+      .map(item => `${item.type}:${item.id ?? 'na'}:${item.title}`)
       .join('|');
     const snapshotHash = createHash('sha256')
       .update(`${authResult.user.email}|${sortedItems}`)

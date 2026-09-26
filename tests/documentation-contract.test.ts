@@ -173,7 +173,7 @@ describe('R8 dependency versions', () => {
 
   it('overrides remain declared in package.json', () => {
     expect(pkg.overrides?.postcss).toBe('8.5.26');
-    expect(pkg.overrides?.sharp).toBe('0.35.3');
+    expect(pkg.overrides?.sharp).toBe('0.35.4');
     expect(pkg.devDependencies?.postcss).toBe('8.5.26');
   });
 

@@ -16,12 +16,17 @@ interface ChatHistoryDoc {
   messages?: { role: string; content: string }[];
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const authResult = await requireUser();
     if (!authResult.ok) {
       return authResult.response;
     }
+
+    // API-001: standard per-user read budget before the primary query,
+    // mirroring the sibling authenticated GET handlers (W3-004).
+    const readLimit = await applyRateLimitUser(request, authResult.user.email, RATE_LIMITS.read);
+    if (readLimit) return readLimit;
 
     await connectToMongoDB();
 
