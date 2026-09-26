@@ -121,7 +121,9 @@ describe('M4 gemini timeouts', () => {
       sort: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       select: vi.fn().mockReturnThis(),
-      lean: undefined,
+      // REL-003 (SC-P1): the route now uses typed .lean() on the owned-list
+      // queries; the mock chain must resolve lean results (plain objects).
+      lean: vi.fn().mockResolvedValue(docs),
       docs,
       then(resolve: (v: unknown) => void) {
         resolve(docs);
@@ -290,7 +292,9 @@ describe('M4 read caps + degraded clear', () => {
       sort: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       select: vi.fn().mockReturnThis(),
-      lean: undefined,
+      // REL-003 (SC-P1): the route now uses typed .lean() on the owned-list
+      // queries; the mock chain must resolve lean results (plain objects).
+      lean: vi.fn().mockResolvedValue(docs),
       docs,
       then(resolve: (v: unknown) => void) {
         resolve(docs);
