@@ -239,15 +239,15 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
                 <button
                   type="button"
                   onClick={(e) => handleWatchlistToggle(item, e)}
-                  aria-pressed={isInWatchlist(item.id)}
-                  aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
+                  aria-pressed={isInWatchlist(contentType as 'movie' | 'tv', item.id)}
+                  aria-label={isInWatchlist(contentType as 'movie' | 'tv', item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
                   className="group/tooltip absolute top-2 right-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                             bg-black/50 backdrop-blur-sm border border-gray-700/50
                             text-white hover:bg-black/70 hover:scale-110
                             transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                 >
                   <Bookmark
-                    className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
+                    className={`w-4 h-4 ${isInWatchlist(contentType as 'movie' | 'tv', item.id) ? 'fill-white' : ''}`}
                   />
 
                 </button>
@@ -344,15 +344,15 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
             <button
               type="button"
               onClick={(e) => handleWatchlistToggle(item, e)}
-              aria-pressed={isInWatchlist(item.id)}
-              aria-label={isInWatchlist(item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
+              aria-pressed={isInWatchlist(contentType as 'movie' | 'tv', item.id)}
+              aria-label={isInWatchlist(contentType as 'movie' | 'tv', item.id) ? `Remove ${item.title || item.name || 'item'} from watchlist` : `Add ${item.title || item.name || 'item'} to watchlist`}
               className="group/tooltip absolute top-2 right-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full
                         bg-black/50 backdrop-blur-sm border border-gray-700/50
                         text-white hover:bg-black/70 hover:scale-110
                         transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
               <Bookmark
-                className={`w-4 h-4 ${isInWatchlist(item.id) ? 'fill-white' : ''}`}
+                className={`w-4 h-4 ${isInWatchlist(contentType as 'movie' | 'tv', item.id) ? 'fill-white' : ''}`}
               />
 
             </button>

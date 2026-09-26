@@ -11,6 +11,7 @@ import React, {
 } from 'react'
 import { useSession, signIn } from 'next-auth/react'
 import { toast } from 'react-hot-toast'
+import { listMembershipKey, isListMediaType, isValidListItemId, type ListMembershipKey } from '@/lib/list-membership'
 
 export interface FavoriteToggleItem {
   itemId: number
@@ -20,10 +21,14 @@ export interface FavoriteToggleItem {
 }
 
 interface FavoritesContextValue {
-  /** Set of every favorite item id (across movies and TV). */
-  favoriteIds: Set<number>
-  /** O(1) membership check for a single id. */
-  isFavorite: (id: number) => boolean
+  /**
+   * Set of every favorite membership key, type-qualified (`movie:<id>` /
+   * `tv:<id>`) so a movie and a TV show sharing one numeric TMDB id are
+   * distinct members. Matches the API/persistence identity `(userId, itemId, type)`.
+   */
+  favoriteIds: Set<ListMembershipKey>
+  /** O(1) membership check for a single media type + id. */
+  isFavorite: (type: 'movie' | 'tv', id: number) => boolean
   /**
    * Optimistically add/remove an item. Updates UI immediately, reverts and
    * toasts on failure. Prompts sign-in for guests.
@@ -37,7 +42,7 @@ const FavoritesContext = createContext<FavoritesContextValue | null>(null)
 
 export function FavoritesProvider({ children }: { children: ReactNode }) {
   const { data: session } = useSession()
-  const [favoriteIds, setFavoriteIds] = useState<Set<number>>(new Set())
+  const [favoriteIds, setFavoriteIds] = useState<Set<ListMembershipKey>>(new Set())
   const [isLoading, setIsLoading] = useState(true)
 
   // Fetch the favorites once per authenticated session (single source of truth
@@ -57,12 +62,18 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
           setFavoriteIds(new Set())
           return
         }
-        const data: { itemId: number }[] = await response.json()
+        const data: { itemId?: unknown; type?: unknown }[] = await response.json()
         if (cancelled) return
+        // Membership identity is the type-qualified pair, not the bare id:
+        // invalid records (bad/missing type, non-finite or non-positive itemId)
+        // are skipped rather than given an invented type.
         const ids = new Set(
           data
-            .filter((item) => typeof item.itemId === 'number')
-            .map((item) => Number(item.itemId))
+            .filter(
+              (item): item is { itemId: number; type: 'movie' | 'tv' } =>
+                isListMediaType(item.type) && isValidListItemId(item.itemId)
+            )
+            .map((item) => listMembershipKey(item.type, item.itemId))
         )
         setFavoriteIds(ids)
       } catch (error) {
@@ -81,7 +92,7 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
   }, [session?.user?.email])
 
   const isFavorite = useCallback(
-    (id: number) => favoriteIds.has(id),
+    (type: 'movie' | 'tv', id: number) => favoriteIds.has(listMembershipKey(type, id)),
     [favoriteIds]
   )
 
@@ -92,13 +103,14 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      const alreadyIn = favoriteIds.has(item.itemId)
+      const membershipKey = listMembershipKey(item.type, item.itemId)
+      const alreadyIn = favoriteIds.has(membershipKey)
 
       // Optimistic update.
       setFavoriteIds((prev) => {
         const next = new Set(prev)
-        if (alreadyIn) next.delete(item.itemId)
-        else next.add(item.itemId)
+        if (alreadyIn) next.delete(membershipKey)
+        else next.add(membershipKey)
         return next
       })
 
@@ -121,11 +133,11 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error('Error toggling favorite:', error)
-        // Roll back the optimistic change.
+        // Roll back the optimistic change (targeted key only).
         setFavoriteIds((prev) => {
           const next = new Set(prev)
-          if (alreadyIn) next.add(item.itemId)
-          else next.delete(item.itemId)
+          if (alreadyIn) next.add(membershipKey)
+          else next.delete(membershipKey)
           return next
         })
         toast.error('Failed to update favorites')
