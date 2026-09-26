@@ -150,15 +150,6 @@ export async function POST(request: NextRequest) {
       return rateLimitResponse;
     }
 
-    // W3-006a: daily chat quota (50 per day)
-    const quotaResult = await consumeQuota(userId, 'chats', 50);
-    if (!quotaResult.allowed) {
-      return NextResponse.json(
-        { error: "Daily chat limit reached", retryAfterSeconds: quotaResult.retryAfterSeconds },
-        { status: 429 }
-      );
-    }
-
     let data: unknown;
     try {
       data = await request.json();
@@ -197,6 +188,16 @@ export async function POST(request: NextRequest) {
           role: m.role === "user" ? ("user" as const) : ("assistant" as const),
           content: String(m.content || ""),
         }));
+    }
+
+    // W3-006a: daily chat quota (50 per day). Rejected input and non-owned
+    // chat references must not consume the daily AI quota (REL-001).
+    const quotaResult = await consumeQuota(userId, 'chats', 50);
+    if (!quotaResult.allowed) {
+      return NextResponse.json(
+        { error: "Daily chat limit reached", retryAfterSeconds: quotaResult.retryAfterSeconds },
+        { status: 429 }
+      );
     }
 
     const orderedHistory = boundChatHistory(history);
