@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "BRACES-EXC-2026-10-03-GHSA-vfj7-8cjw-p6xm",
+  "advisory": "GHSA-vfj7-8cjw-p6xm",
+  "cve": "CVE-2026-93687",
+  "npmAuditSource": 1240992,
+  "package": "braces",
+  "affectedVersion": "3.0.3",
+  "severity": "high",
+  "cvssScore": 7.5,
+  "cvssVector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+  "allowedProductionPackages": [
+    "braces",
+    "chokidar",
+    "fast-glob",
+    "micromatch",
+    "tailwindcss"
+  ],
+  "allowedBarePackages": [
+    "@next/eslint-plugin-next",
+    "braces",
+    "chokidar",
+    "eslint-config-next",
+    "fast-glob",
+    "micromatch",
+    "tailwindcss"
+  ],
+  "owner": "Repository maintainer (human approver of the Phase 14 exception; role-based, no personal data)",
+  "rationale": "A patched release of `braces` does not exist: 3.0.3 is the latest npm release (published 2024-05-21) and the advisory lists no first patched version, so there is nothing to remediate to today. Request-time reachability is not demonstrated: the package is reached only through the Tailwind CSS build CLI and the ESLint tooling (zero application imports, static build-time glob literals only). Exposure is therefore limited to build and development tooling, not served requests. The exception is temporary and expires automatically; it does not declare the package safe, and any additional advisory, package, severity change, CVSS change, version change, or expiry rejects the audit and fails the gate. Upstream status: fix PR micromatch/braces#72 is open and unmerged on a third-party fork with no maintainer engagement, and the upstream repository has had no push since 2025-01-19.",
+  "approvalDate": "2026-10-03",
+  "expiryDate": "2026-10-17T23:59:59Z",
+  "reviewCadenceDays": 7,
+  "reviewInstructions": "Re-review at least every 7 days from the approval date, and immediately on any `braces` registry publish. Patch-check command: `npm view braces dist-tags.latest` — if the output is anything other than `3.0.3`, a patched release exists; remove this exception, bump `braces`, and re-run the audit gates. Also check the upstream fix state: `gh pr view 72 --repo micromatch/braces --json state,merged`. At the expiry date the policy exits 1 unconditionally, CI goes red, and this exception must be removed and either remediated or re-authorized with fresh evidence. Do not extend the expiry by editing this file without a new risk-acceptance decision. Companion follow-up: moving `tailwindcss-animate` from `dependencies` to `devDependencies` would permanently remove the production-closure exposure (it is the sole production-classified dependent of `tailwindcss`), but the bare audit's ESLint chain would still require an exception.",
+  "upstreamLinks": [
+    "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+    "https://nvd.nist.gov/vuln/detail/CVE-2026-93687",
+    "https://github.com/micromatch/braces/issues/70",
+    "https://github.com/micromatch/braces/issues/73",
+    "https://github.com/micromatch/braces/pull/72"
+  ]
+}

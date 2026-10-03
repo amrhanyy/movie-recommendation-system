@@ -24,7 +24,13 @@ export const cacheManager = {
     const cacheKeys = [
       `movie:${id}:details`,
       `movie:${id}:recommendations`,
-      `movie:${id}:similar`
+      `movie:${id}:similar`,
+      // AI-similar v2 scoped key written by the ai-similar route
+      // (buildCacheKey(CACHE_SCOPES.aiSimilar, `${movieId}:v2`)). Built with the
+      // canonical builder — never hand-written — because normalizeKeyComponent
+      // maps the `:` in `${id}:v2` to `_`, so the stored tail is `${id}_v2`
+      // (CACHE-OPS-001).
+      buildCacheKey(CACHE_SCOPES.aiSimilar, `${id}:v2`),
     ];
     await Promise.all(cacheKeys.map(key => redisCache.delete(key)));
   },
