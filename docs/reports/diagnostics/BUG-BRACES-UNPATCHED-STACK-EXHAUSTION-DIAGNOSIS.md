@@ -215,7 +215,7 @@ Phase 14 did not alter the index.
 | OS | Windows 10 (`MINGW64_NT-10.0-19045 3.6.3`) |
 | Shell | git-bash / MSYS (`/usr/bin/bash`) |
 | Node (default PATH) | `v26.7.0` |
-| Node 22 validation runtime | `C:\Users\amrko\AppData\Local\ms-playwright-go\1.50.1\node.exe` → **`v22.13.1`** (pre-existing, discovered in Phase 11, reused; not installed or downloaded) |
+| Node 22 validation runtime | `<pre-existing-node-22-runtime>/node.exe` → **`v22.13.1`** (pre-existing, discovered in Phase 11, reused; not installed or downloaded) |
 | npm (under both runtimes) | `11.19.0` (`node <node-26-dist>/node_modules/npm/bin/npm-cli.js`) |
 | Git | `2.50.1.windows.1` |
 | `core.autocrlf` | `true` (see §44) |
