@@ -50,7 +50,7 @@
     "clsx": "^2.1.1",
     "cmdk": "1.0.4",
     "dotenv": "^16.4.7",
-    "lucide-react": "^0.454.0",
+    "lucide-react": "^1.41.0",
     "mongodb": "^6.13.0",
     "mongoose": "^8.24.3",
     "next": "^15.5.9",
