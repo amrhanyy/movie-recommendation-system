@@ -1,1032 +1,579 @@
-# Project Blueprint: MovieMind
+# Movie Recommendation System — Project Blueprint & Engineering Audit
 
-## Table of Contents
+## 1. Document control
 
-1. [Executive Summary](#executive-summary)
-2. [Tech Stack](#tech-stack)
-3. [Architecture Overview](#architecture-overview)
-4. [Directory Map](#directory-map)
-5. [Data Model](#data-model)
-6. [API Surface](#api-surface)
-7. [End-to-End Flows](#end-to-end-flows)
-8. [Security Architecture](#security-architecture)
-9. [Performance Analysis](#performance-analysis)
-10. [Code Quality Findings](#code-quality-findings)
-11. [Deployment & Operations](#deployment--operations)
-12. [Glossary](#glossary)
+- **Purpose:** Single authoritative technical blueprint + audit for developers / AI agents. Reconstructs product, architecture, data, interfaces, ops, risks from repo evidence.
+- **Repo:** `movie-recommendation-system` (Next.js 15 App Router, single deployable). Root: `D:/fork ai to create website/final porject/movie-recommendation-system`.
+- **Branch:** `main`. **SHA:** `70fe77655467f5105f5d0e9b02594ba1c62b2952`. Working tree deletes `docs/PROJECT_BLUEPRINT.md`, `docs/ARCHITECTURE_REVIEW.md`, `docs/SECURITY_AUDIT.md`, `docs/UI_UX_REVIEW.md` (git status, unstaged `D`); this file recreates the blueprint path only.
+- **Date:** 2026-09-10 UTC.
+- **Scope:** Full repo: `app/`, `components/`, `contexts/`, `hooks/`, `lib/`, `scripts/`, `tests/`, configs, CI, docs claims (sampled). Excludes `node_modules/`, `.next/`, `coverage/`.
+- **Methodology:** Manifests/configs first, then auth/data/AI/cache paths, then representative routes + grep for `process.env`, handlers, tests. Validation: `npm run typecheck` (pass), `npm run lint` (pass, 94 warnings), `npm test` (349/349 pass). No build/deploy/migration run. No secrets printed.
+- **Evidence classes:** Plain statements = Verified (cited). `Inferred:` = strong multi-signal suggestion. `Unknown:` = not determinable.
+- **Limitations:** No live Mongo/Redis/TMDB/Gemini probed. `.env`/`.env.local` present on disk but not read (secret hygiene). Prior `docs/*.md` reports sampled, not re-verified line-by-line. Stale `PROJECT_ARCHITECTURE.md` claims ignored where contradicted by code.
+- **Confidence:** High for auth, validation, cache, AI plumbing, routes, env schema, tests. Medium for perf hot-path costs (no prod profiling). Low for deployment topology (no IaC/Dockerfile in repo).
 
----
+## 2. Table of contents
 
-## Executive Summary
+- [1. Document control](#1-document-control)
+- [2. Table of contents](#2-table-of-contents)
+- [3. Executive summary](#3-executive-summary)
+- [4. Product and domain model](#4-product-and-domain-model)
+- [5. Technology stack](#5-technology-stack)
+- [6. System context](#6-system-context)
+- [7. Architecture overview](#7-architecture-overview)
+- [8. Repository map](#8-repository-map)
+- [9. Application and package catalog](#9-application-and-package-catalog)
+- [10. Data architecture](#10-data-architecture)
+- [11. API and interface surface](#11-api-and-interface-surface)
+- [12. Critical end-to-end flows](#12-critical-end-to-end-flows)
+- [13. Authentication, authorization, and trust boundaries](#13-authentication-authorization-and-trust-boundaries)
+- [14. External integrations](#14-external-integrations)
+- [15. Configuration and environment variables](#15-configuration-and-environment-variables)
+- [16. Local development guide](#16-local-development-guide)
+- [17. Build, deployment, and operations](#17-build-deployment-and-operations)
+- [18. Testing strategy and current test posture](#18-testing-strategy-and-current-test-posture)
+- [19. Engineering findings](#19-engineering-findings)
+- [20. Positive engineering observations](#20-positive-engineering-observations)
+- [21. Risk register and prioritized remediation roadmap](#21-risk-register-and-prioritized-remediation-roadmap)
+- [22. Validation and execution report](#22-validation-and-execution-report)
+- [23. Coverage and omissions ledger](#23-coverage-and-omissions-ledger)
+- [24. Glossary](#24-glossary)
+- [25. Mental model for future developers and AI agents](#25-mental-model-for-future-developers-and-ai-agents)
+- [26. New-developer reading order](#26-new-developer-reading-order)
+- [27. Open questions](#27-open-questions)
 
-**MovieMind** is a full-stack movie and TV recommendation platform built with Next.js 15. It aggregates content from TMDB (The Movie Database), enriches discovery with Google Gemini AI, and provides personalized user experiences through favorites, watchlists, viewing history, and AI-powered recommendations.
+## 3. Executive summary
 
-**Target Users:** Movie enthusiasts seeking discovery, tracking, and personalized recommendations.
+MovieMind is a Google-OAuth, Next.js-fullstack movie/TV discovery app: public TMDB browsing (trending, search, genres, details, trailers, celebrities, mood/time-based) plus authenticated personalization (favorites, watchlist, history, AI chat, AI recommendations, AI-similar, admin console, privacy export/delete). Single Next.js deployable; MongoDB/Mongoose persistence keyed by user email; optional Redis with bounded in-memory fallback under one canonical namespace; Gemini `generateContent` via `x-goog-api-key` header with Zod-validated structured output.
 
-**Core Features:**
-- Browse trending, top-rated, and popular movies/TV shows
-- AI-powered chat assistant for movie recommendations
-- Personalized recommendations based on user preferences
-- Favorites and watchlist management
-- Viewing history tracking
-- Mood-based and time-based movie discovery
-- Celebrity browsing
-- Admin dashboard with user management and cache controls
+Architectural shape: server-rendered App Router + 44 `app/api/**/route.ts` handlers; central server auth (`lib/security/auth.ts`), strict Zod schemas (`lib/security/schemas.ts`), per-user/IP rate limits (`lib/security/rateLimit.ts`), daily AI quotas (`lib/security/quota.ts`), cardinality trims, retention cutoffs, namespaced cache (`lib/cache*.ts`), hardened CSP/cookies.
 
-**Current State:** Production-grade application with extensive security hardening (CSP, rate limiting, input validation, RBAC). Multiple security audit reports indicate iterative hardening over time.
+Maturity: high security hygiene (origin gate, fail-closed features/auth, PII-safe logs), 36 test files / 349 tests passing, typecheck clean, lint 0 errors. Top strengths: authZ correctness, cache namespace discipline, AI output validation, privacy export/delete. Top risks: AI cost/fan-out paths (unbounded enrichment in ai-similar; quota consumed before input validation in chat), retention enforced only at read-time (no DB TTL), import-time Mongo throw, no containers/observability backend.
 
----
+Next: fix quota-before-validation + ai-similar concurrency cap, enable operator TTL migration with backups, add Dockerfile/health wiring docs, clear lint warnings, add production error-monitoring.
 
-## Tech Stack
+## 4. Product and domain model
 
-| Category | Technology | Version | Purpose |
-|----------|-----------|---------|---------|
-| **Runtime** | Next.js | 15.5.4 | React framework (App Router) |
-| **Language** | TypeScript | 5.x | Type safety |
-| **UI** | React | 18.3.1 | Component library |
-| **Styling** | Tailwind CSS | 3.4.17 | Utility-first styling |
-| **UI Primitives** | Radix UI | Various | Accessible components |
-| **Icons** | Lucide React | 0.454.0 | Icon library |
-| **Database** | MongoDB | 6.13.0 | Primary data store |
-| **ODM** | Mongoose | 8.24.3 | Schema modeling |
-| **Cache** | Redis | 4.7.0 | Optional caching layer |
-| **Auth** | NextAuth.js | 4.24.11 | Google OAuth |
-| **Validation** | Zod | 3.24.1 | Schema validation |
-| **Testing** | Vitest | 3.2.7 | Unit/integration tests |
-| **Charts** | Recharts | 2.15.0 | Admin dashboard charts |
-| **Notifications** | Sonner / react-hot-toast | 1.7.1 / 2.5.2 | Toast notifications |
+- **Purpose:** Discover movies/TV (TMDB proxy), track taste (favorites/watchlist/history), get Gemini-grounded recommendations/chat. Verified by `app/page.tsx:38-277`, `app/api/*`, `components/*`.
+- **Users/roles:** Anonymous browsers (public TMDB reads); authenticated `user`; `admin`; `owner`. Role enum in `lib/auth.ts:10`, `lib/models/User.ts:20`. Admin-only console at `app/admin/page.tsx` + server guard `app/admin/layout.tsx:20-40`.
+- **Core use cases:**
+  1. Browse trending/search/genres/details/trailers — no login. Handlers `app/api/trending/route.ts:14`, `app/api/search/route.ts:9`, `app/api/genres/route.ts:11`, `app/api/movie/[id]/route.ts:13`.
+  2. Save favorites/watchlist (500 cap, rollback) — `app/api/favorites/route.ts:37-148`, `app/api/watchlist/route.ts:37-151`.
+  3. Passive history (consent-gated, 2000 cap, 20-read) — `app/api/history/route.ts:50-170`.
+  4. AI chat (10/min + 50/day, 100 chats/user, 200 msgs/chat) — `app/api/chat/route.ts:132-255`.
+  5. AI recommendations (5/min + 20/day, content-hash cache 3600s) — `app/api/ai-recommendations/route.ts:136-530`.
+  6. AI-similar per movie (10/min, 24h cache) — `app/api/movie/[id]/ai-similar/route.ts:126-316`.
+  7. Admin: users/stats/settings/cache — `app/api/admin/*/route.ts`.
+  8. Privacy: export JSON, delete account, retention — `app/api/user/export/route.ts:33`, `app/api/user/account/route.ts:42`, `lib/privacy-service.ts:17-181`.
+- **Entities:** `User`, `Favorites`, `Watchlist`, `History`, `ChatHistory`, `UsageQuota`, `RevokedSession`, `FeatureSettings` (inline schema in `app/api/features/route.ts:15-22` + `app/api/admin/settings/route.ts`).
+- **Business rules (verified):** favorites/watchlist max 500 with post-write rollback (`app/api/favorites/route.ts:126-136`); history max 2000 (`app/api/history/route.ts:129`); chats max 100 (`app/api/chat/route.ts:237`); chat quota 50/day, recs 20/day (`app/api/chat/route.ts:154`, `app/api/ai-recommendations/route.ts:221`); export caps 500 history / 100 chats (`lib/privacy-service.ts:34-35`); last-owner cannot be demoted/deleted (`lib/security/auth.ts:326-350`, `app/api/admin/users/route.ts:168-175`, `lib/account-deletion.ts:35-68`); `previousMessages` client field ignored (`app/api/chat/route.ts:178`, `lib/security/schemas.ts:69-76`); history writes return `{success:false,reason:"tracking_disabled"}` when consent off (`app/api/history/route.ts:102-108`).
+- **State transitions:** `user→admin→owner` only via owner CLI (`scripts/promote-owner.js:38-120`); `/api/admin/promote` always 404 (`app/api/admin/promote/route.ts:15-22`); JWT `jti` issued once, revoked on signOut (`lib/auth.ts:58-66`, `lib/auth.ts:199-250`); Redis health `healthy→disabled→cooldown-retry` (`lib/redis-health.ts:46-97`); readiness `ready/degraded/unavailable` (`app/api/health/ready/route.ts:65-138`).
+- **Feature inventory:** `features.aiAssistant` boolean gates `/ai-assistant` + `/api/ai-recommendations` fail-closed (`middleware.ts:24-50`, `app/api/features/route.ts:52-64`). No other flags in code.
 
-**External Services:**
-| Service | Purpose | Required |
-|---------|---------|----------|
-| TMDB API | Movie/TV data | Yes |
-| Google Gemini AI | Chat & recommendations | Optional |
-| Google OAuth | Authentication | Yes |
+## 5. Technology stack
 
----
+| Layer | Technology | Version/constraint | Purpose | Evidence | Confidence |
+|---|---|---|---|---|---|
+| Runtime/UI | Next.js App Router + React 18 | `next ^15.5.9`, `react ^18.3.1` | SSR pages + API routes | `package.json:56-59`, `app/layout.tsx:26-84` | High |
+| Auth | next-auth v4 Google + JWT | `next-auth ^4.24.15`, maxAge 86400/updateAge 3600 | OAuth login, stateless session + DB role | `lib/auth.ts:40-56`, `package.json:57` | High |
+| DB/ODM | MongoDB + Mongoose | `mongodb ^6.13.0`, `mongoose ^8.24.3` | Users, lists, history, chats, quotas | `lib/mongodb.ts:30-56`, `lib/models/*.ts` | High |
+| Cache | node-redis + memory LRU fallback | `redis ^4.7.0`, 5000 entries, 1000 inflight | TMDB/AI cache, rate-limit counters | `lib/redis.ts:38-129`, `lib/cache.ts:10-28`, `package.json:66` | High |
+| AI | Gemini generateContent REST | default `gemini-3.7-flash`, 15s timeout | Chat, recs, similar | `lib/gemini-payload.ts:8-20`, `lib/ai-security.ts:190-259` | High |
+| Upstream media | TMDB v3 REST (api_key query) | `https://api.themoviedb.org/3`, 8s timeout/2 retries | All catalog data | `lib/tmdb.ts:6-69` | High |
+| Validation | Zod strict schemas | `zod ^3.24.1` | Input + AI output | `lib/security/schemas.ts:1-161`, `lib/ai-security.ts:134-164` | High |
+| Styling/UI | Tailwind + shadcn/Radix | `tailwindcss ^3.4.17` | Design system | `tailwind.config.ts`, `components/ui/` (43 files) | High |
+| Tests | Vitest node+jsdom + RTL | `vitest ^3.2.7`, 36 files | Unit/contract/UI | `vitest.config.mts:12-49`, `tests/` | High |
+| Lint/types | ESLint next + tsc strict | `eslint ^9.39.5`, `typescript ^5` | Quality gates | `eslint.config.mjs`, `tsconfig.json:11-14` | High |
+| CI | GitHub Actions Node 22 | ci.yml validate/test/security/build | Gates | `.github/workflows/ci.yml:15-139` | High |
+| Fonts/images | next/font Inter, next/image avif/webp | pinned TMDB/lh3 hosts | Perf | `app/layout.tsx:14`, `next.config.mjs:3-22` | High |
 
-## Architecture Overview
+`Inferred:` Node 22 is the canonical runtime (CI pins 22; no `.nvmrc` found). No Docker/K8s/Terraform/Vercel config in repo — deployment target is operator-managed Node (see §17).
 
-### High-Level Architecture
+## 6. System context
 
-```mermaid
-graph TB
-    subgraph Client["Client (Browser)"]
-        UI[React Components]
-        Hooks[Custom Hooks]
-    end
-    
-    subgraph Next["Next.js Server"]
-        Pages[Page Components]
-        API[API Routes]
-        Middleware[Middleware]
-        Lib[Library Layer]
-    end
-    
-    subgraph External["External Services"]
-        TMDB[TMDB API]
-        Gemini[Google Gemini]
-        Google[Google OAuth]
-    end
-    
-    subgraph Data["Data Layer"]
-        MongoDB[(MongoDB)]
-        Redis[(Redis)]
-    end
-    
-    UI --> Hooks
-    Hooks --> API
-    Pages --> API
-    Middleware --> API
-    API --> Lib
-    Lib --> TMDB
-    Lib --> Gemini
-    Lib --> Google
-    Lib --> MongoDB
-    Lib --> Redis
-```
+Internal actors: anonymous visitor, authenticated user, admin, owner, operator (CLI + Mongo). External: Google OAuth, TMDB API, Gemini API, MongoDB Atlas/compatible, optional Redis/Upstash, reverse proxy/CDN (XFF source).
 
-### Request Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant MW as Middleware
-    participant API as API Route
-    participant AUTH as Auth Layer
-    participant LIB as Library
-    participant DB as Database
-    participant EXT as External API
-
-    C->>MW: HTTP Request
-    MW->>MW: Feature flag check
-    MW->>MW: Auth check (token)
-    alt Unauthorized & protected
-        MW-->>C: 302/401
-    end
-    MW->>API: Forward request
-    API->>AUTH: requireSession/requireAdmin
-    alt Auth failed
-        AUTH-->>C: 401/403
-    end
-    API->>API: Rate limit check
-    API->>API: Zod validation
-    API->>LIB: Business logic
-    LIB->>DB: Query
-    DB-->>LIB: Result
-    LIB->>EXT: External call (optional)
-    EXT-->>LIB: Response
-    LIB-->>API: Processed data
-    API-->>C: JSON Response
-```
-
-### Middleware Pipeline
+Trust boundaries: browser→Next.js (cookies, origin gate); Next.js→Mongo/Redis (connection strings); Next.js→TMDB/Gemini (server keys, never to client). CSP `connect-src 'self'`, `frame-src youtube-nocookie` only (`next.config.mjs:30-52`).
 
 ```mermaid
 flowchart LR
-    A[Request] --> B{Static asset?}
-    B -->|Yes| C[Pass through]
-    B -->|No| D{AI route?}
-    D -->|Yes| E{Feature enabled?}
-    E -->|No| F[Redirect/Deny]
-    E -->|Yes| G{API route?}
-    D -->|No| G
-    G -->|Yes| H{Protected?}
-    H -->|Yes| I{Authenticated?}
-    I -->|No| J[401]
-    I -->|Yes| K[Pass through]
-    H -->|No| K
-    G -->|No| L{Protected page?}
-    L -->|Yes| M{Authenticated?}
-    M -->|No| N[Redirect to /auth/signin]
-    M -->|Yes| K
-    L -->|No| K
+  Browser --> NextApp["Next.js App (pages + /api)"]
+  NextApp --> Google["Google OAuth"]
+  NextApp --> TMDB["TMDB v3 API"]
+  NextApp --> Gemini["Gemini generateContent"]
+  NextApp --> Mongo[("MongoDB / Mongoose")]
+  NextApp --> Redis[("Redis (optional) / memory fallback")]
+  Operator --> NextApp
+  Operator --> Mongo
 ```
 
----
+Explanation: all third-party secrets stay server-side; browser only talks same-origin (CSP + origin gate). Redis/Mongo failures degrade (memory fallback / 503 readiness), never leak secrets.
 
-## Directory Map
+## 7. Architecture overview
 
-### Root Configuration Files
+- **Style:** Monolithic fullstack App Router; route-handler controllers → `lib/security/*` guards → Mongoose models / `tmdbClient` / Gemini fetch → `redisCache.getOrSet`. UI holds no business logic beyond optimistic contexts (`contexts/FavoritesContext.tsx`, `contexts/WatchlistContext.tsx`).
+- **Deployable:** One Node service (`npm run build` + `npm start`). No workspaces/monorepo.
+- **Components:** `app/**` pages/layouts; 44 API handlers; `lib/auth.ts` (NextAuth options); `lib/security/auth.ts` (require*/origin/owner guards); `lib/security/rateLimit.ts` + `quota.ts` + `cardinality.ts`; `lib/cache*.ts` + `redis*.ts`; `lib/tmdb.ts`; `lib/gemini-payload.ts` + `ai-security.ts`; `lib/privacy-*.ts` + `account-deletion.ts`; `middleware.ts` (UX defense-in-depth); `instrumentation.ts` (prod boot gate).
+- **Comms:** Same-origin JSON over HTTPS; server→TMDB/Gemini HTTPS+JSON; server→Mongo via Mongoose; server→Redis via node-redis. No queues/sockets/cron in repo.
+- **Dependency direction:** routes → lib/security → lib/models|tmdb|gemini → mongodb/redis. `lib/env.ts` standalone (never client-imported by convention).
 
-| File | Purpose |
-|------|---------|
-| `package.json` | Dependencies, scripts, project metadata |
-| `next.config.mjs` | Next.js config with CSP headers, image settings |
-| `tsconfig.json` | TypeScript strict mode, path aliases (`@/*`) |
-| `.env.example` | Environment variable reference template |
-| `middleware.ts` | Auth, feature-flag, and route protection |
-| `tailwind.config.ts` | Custom theme, animations, typography |
-| `eslint.config.mjs` | ESLint rules (Next.js defaults) |
-| `vitest.config.mts` | Test configuration |
+```mermaid
+flowchart TB
+  MW["middleware.ts (UX gate)"] --> Routes["app/api/**/route.ts"]
+  Routes --> Guards["lib/security/auth + schemas + rateLimit + quota"]
+  Guards --> Models["Mongoose models"]
+  Guards --> TMDBc["lib/tmdb.ts"]
+  Guards --> GAI["lib/gemini-payload + ai-security"]
+  Models --> Mongo[("MongoDB")]
+  TMDBc --> Cache["redisCache.getOrSet"]
+  GAI --> Cache
+  Cache --> Redis[("Redis / memory")]
+```
 
-### `app/` — Next.js App Router
+```mermaid
+flowchart LR
+  CDN["Proxy/CDN"] --> Node["Node 22: next start"]
+  Node --> MongoD[("Mongo replica-set")]
+  Node --> RedisU[("Upstash/Redis (optional)")]
+  Node --> TMDBx["TMDB"]
+  Node --> Gemx["Gemini"]
+```
 
-#### Pages (Routes)
+- **Startup:** `instrumentation.ts:19-63` `register()` (nodejs+production only) calls `runtimeEnv()`; core errors throw (boot fails), Redis-only errors degrade to memory + warn. `lib/mongodb.ts:30-56` lazy global-cached connect; `lib/redis.ts:38-129` lazy connect with 60s block + health gate.
+- **Failures:** readiness 503 degraded/unavailable (`app/api/health/ready/route.ts:100-138`); features 503 fail-closed (`app/api/features/route.ts:52-64`); middleware AI routes 503/redirect fail-closed (`middleware.ts:40-49`); JWT callback fail-closed on missing id (`lib/auth.ts:80-129`); quota/rate-limit 429 with Retry-After.
 
-| Path | File | Purpose |
-|------|------|---------|
-| `/` | `app/page.tsx` | Home: trending, popular, genres, personalized sections |
-| `/ai-assistant` | `app/ai-assistant/page.tsx` | AI chat interface |
-| `/celebrities` | `app/celebrities/page.tsx` | Browse popular celebrities |
-| `/favorites` | `app/favorites/page.tsx` | User favorites grid |
-| `/genres` | `app/genres/page.tsx` | Browse all genres |
-| `/movie/[id]` | `app/movie/[id]/page.tsx` | Movie details with AI similar |
-| `/tv/[id]` | `app/tv/[id]/page.tsx` | TV show details |
-| `/top-rated` | `app/top-rated/page.tsx` | Top-rated movies & TV |
-| `/trending` | `app/trending/page.tsx` | Trending content |
-| `/watchlist` | `app/watchlist/page.tsx` | User watchlist |
-| `/profile` | `app/profile/page.tsx` | Profile, history, privacy settings |
-| `/privacy` | `app/privacy/page.tsx` | Public privacy policy |
-| `/admin` | `app/admin/page.tsx` | Admin dashboard |
+## 8. Repository map
 
-#### API Routes (`app/api/`)
+Pruned tree (source/config only; omits `node_modules/.next/coverage`):
 
-**Public (TMDB Proxy):**
-| Endpoint | Methods | Purpose |
-|----------|---------|---------|
-| `/api/movies` | GET | Popular + top-rated + genres |
-| `/api/movies/top-rated` | GET | Top-rated movies |
-| `/api/movies/time-based` | GET | Movies by duration |
-| `/api/trending` | GET | Trending content |
-| `/api/trending/movie` | GET | Trending movies by window |
-| `/api/trending/tv` | GET | Trending TV by window |
-| `/api/genres` | GET | All movie genres |
-| `/api/genre/[id]` | GET | Genre details + movies |
-| `/api/movie/[id]` | GET | Movie details |
-| `/api/movie/[id]/ai-similar` | GET | AI-similar movies |
-| `/api/tv/[id]` | GET | TV show details |
-| `/api/tv/top-rated` | GET | Top-rated TV shows |
-| `/api/actor/[id]` | GET | Actor/person details |
-| `/api/celebrities` | GET | Popular celebrities |
-| `/api/search` | GET | Search movies/TV |
-| `/api/trailers` | GET | Movies with trailers |
-| `/api/mood-recommendations` | GET | Movies by mood |
-| `/api/features` | GET | Feature flags |
-| `/api/health/live` | GET | Liveness probe |
-| `/api/health/ready` | GET | Readiness probe |
+```text
+app/ layout.tsx page.tsx error.tsx loading.tsx not-found.tsx globals.css
+app/[mediaType]/[id]/ app/actor/[id]/ app/admin/ app/ai-assistant/ app/auth/signin/
+app/celebrities/ app/favorites/ app/feature-unavailable/ app/genre/[id]/ app/genres/
+app/movie/[id]/ app/privacy/ app/profile/ app/search/ app/top-rated/ app/trending/ app/tv/[id]/ app/watchlist/
+app/api/ 44 route.ts (actor, admin/*, ai-recommendations, auth, celebrities, chat, chat-history*,
+  favorites, features, genre*, genres, health/*, history, mood-recommendations, movie/*, movies*,
+  search, trailers, trending*, tv/*, user*, users, watchlist*)
+components/ 43 top-level + admin/4 + home/LatestTrailers + layout/ + ui/43 (shadcn)
+contexts/ FavoritesContext WatchlistContext LanguageContext
+hooks/ lib/ 21 + models/8 + security/6
+scripts/ promote-owner.js setupDatabase.cts testRedisConnection.ts download-genre-images.js
+tests/ 36 + helpers
+middleware.ts instrumentation.ts next.config.mjs tailwind/postcss/eslint/vitest/tsconfig
+.github/workflows/ci.yml .github/dependabot.yml .env.example
+```
 
-**Authenticated (User Data):**
-| Endpoint | Methods | Purpose |
-|----------|---------|---------|
-| `/api/favorites` | GET, POST, DELETE | Manage favorites |
-| `/api/watchlist` | GET, POST, DELETE | Manage watchlist |
-| `/api/history` | GET, POST, DELETE | Viewing history |
-| `/api/chat` | POST | Chat with Gemini AI |
-| `/api/ai-recommendations` | POST | AI personalized recommendations |
-| `/api/chat-history` | GET | List chat sessions |
-| `/api/chat-history/[id]` | GET, DELETE | Chat session detail |
-| `/api/user` | GET | Current user data |
-| `/api/user/account` | DELETE | Delete account |
-| `/api/user/export` | GET | Export user data |
+Per-directory: `app/api/*` = controllers (parse→guard→logic→respond); `lib/security/*` = cross-cutting guards; `lib/models/*` = Mongoose schemas; `lib/cache*`+`lib/redis*` = caching; `components/*` = client UI + optimistic contexts; `scripts/` = operator CLIs (one destructive); `tests/` = contract/security/perf tests; no generated-code dirs except `.next/`.
 
-**Admin:**
-| Endpoint | Methods | Purpose |
-|----------|---------|---------|
-| `/api/admin/stats` | GET | System statistics |
-| `/api/admin/users` | GET, PATCH | User management |
-| `/api/admin/settings` | GET, PUT | Feature settings |
-| `/api/admin/cache` | GET, POST | Cache management |
+## 9. Application and package catalog
 
-**Auth:**
-| Endpoint | Purpose |
-|----------|---------|
-| `/api/auth/[...nextauth]` | NextAuth handlers |
+Single application `movie-recommendation-system@1.0.0` (`package.json:1-3`). No packages/workspaces.
 
-### `lib/` — Core Library
+| Item | Type | Entry | Build/test | Config | Deploy | Evidence |
+|---|---|---|---|---|---|---|
+| Next.js app + API | monolith | `app/layout.tsx:26`, `app/page.tsx:36`, `middleware.ts:8`, `instrumentation.ts:19` | `npm run build` / `npm test` / `npm run lint`+`typecheck` | `next.config.mjs`, `lib/env.ts` | Node 22 `npm start`, probes `/api/health/live`, `/api/health/ready` | `package.json:5-14` |
+| Operator CLI promote-owner | script | `scripts/promote-owner.js:38` | manual `node scripts/promote-owner.js <email>` | `MONGODB_URI` | operator laptop/bastion | `scripts/promote-owner.js:1-28` |
+| setupDatabase | destructive script | `scripts/setupDatabase.cts` | `npm run setup-db` — never prod | `MONGODB_URI`, `WIPE_PRODUCTION` | local only | `package.json:13`, script header |
+| testRedisConnection | diagnostic | `scripts/testRedisConnection.ts` | `npm run test-redis` | Redis vars | local | `package.json:14` |
 
-| File | Purpose |
-|------|---------|
-| `auth.ts` | NextAuth configuration, Google provider, JWT callbacks |
-| `mongodb.ts` | MongoDB connection with global caching |
-| `redis.ts` | Redis client with health monitoring |
-| `redis-config.ts` | Redis configuration builder |
-| `redis-health.ts` | Redis health tracking, circuit breaker |
-| `cache.ts` | RedisCache class with memory fallback, stampede protection |
-| `cache-namespace.ts` | Cache key namespacing utilities |
-| `cacheManager.ts` | High-level cache management |
-| `env.ts` | Environment validation with Zod |
-| `security/auth.ts` | `requireSession`, `requireUser`, `requireAdmin`, `requireOwner` |
-| `security/rateLimit.ts` | Rate limiting with Redis + memory fallback |
-| `security/schemas.ts` | Zod validation schemas |
-| `ai-security.ts` | AI URL validation, JSON extraction, error mapping |
-| `gemini-payload.ts` | Gemini API payload builders |
-| `ai-markdown.tsx` | Safe Markdown renderer for AI output |
-| `fetchWithRetry.ts` | Enhanced fetch with retry + timeout |
-| `privacy-service.ts` | User data export |
-| `privacy-retention.ts` | Retention policy helpers |
-| `account-deletion.ts` | Account deletion with owner protection |
-| `tmdb.ts` | TMDB API helpers |
-| `utils.ts` | Miscellaneous utilities |
+## 10. Data architecture
 
-### `lib/models/` — Mongoose Models
+Stores: MongoDB (primary), Redis (cache + rate counters, optional), in-memory LRU (fallback), browser (NextAuth cookies only — no localStorage persistence found). No search/vector/queue/blob stores. No migrations dir; no seed except destructive setup script.
 
-| File | Model | Collection |
-|------|-------|------------|
-| `User.ts` | User | `users` |
-| `Movie.ts` | Movie | `movies` |
-| `Rating.ts` | Rating | `ratings` |
-| `ChatHistory.ts` | ChatHistory | `chat_histories` |
-| `History.ts` | History | `histories` |
-| `FavoritesModel.ts` | Favorites | `favorites` |
-| `WatchlistModel.ts` | Watchlist | `watchlists` |
-| `index.ts` | Barrel export | — |
+Schemas (all Mongoose, `_id` ObjectId PK):
 
-### `components/` — UI Components
+- `User` (`lib/models/User.ts:5-28`): `email! unique`, `name?`, `image?`, `role enum user|admin|owner default user`, `preferences{favorite_genres[], selected_moods[], historyTrackingEnabled default true}`, `created_at`. Helper `getUserByEmail`.
+- `Favorites` (`lib/models/FavoritesModel.ts:3-22`): `userId!`, `itemId!`, `type movie|tv`, `title!`, `posterPath?`, `createdAt`; unique `{userId,itemId,type}`.
+- `Watchlist` (`lib/models/WatchlistModel.ts`, same shape, model `Watchlist`).
+- `History` (`lib/models/History.ts:3-30`): `userId!`, `itemId!`, `type movie|tv|person`, `title!`, `posterPath?`, `viewedAt`; unique `{userId,itemId,type}` + `{userId,viewedAt:-1}` trim index. TTL commented out (operator migration).
+- `ChatHistory` (`lib/models/ChatHistory.ts:3-32`): `userId!`, `messages[{role,title enum,content!,timestamp}]`, `createdAt/updatedAt`; `{userId,updatedAt:-1}` index. TTL commented out.
+- `UsageQuota` (`lib/models/UsageQuota.ts:3-24`): `userId!`, `day YYYY-MM-DD!`, `chats/recs`, `expiresAt!`; unique `{userId,day}` + TTL `expiresAt`.
+- `RevokedSession` (`lib/models/RevokedSession.ts:3-15`): `jti! unique`, `expiresAt!` + TTL.
+- `FeatureSettings` inline (`app/api/features/route.ts:15-22`): `features.aiAssistant default true`, timestamps.
 
-**Primitives (`components/ui/`):** 30+ shadcn/ui-style components (button, dialog, form, tabs, etc.)
+Relations: all user-owned rows keyed by `userId = session email` (not ObjectId) — `Inferred:` legacy choice simplifies session scoping but couples rename/email-change. Cardinality: 1 user → N list/history/chat rows, bounded by trims (500/2000/100/200-per-chat).
 
-**Feature Components:**
-| Component | Purpose |
-|-----------|---------|
-| `ChatAssistant.tsx` | AI chat interface |
-| `SearchBar.tsx` | Global search input |
-| `AuthButton.tsx` | Google sign-in/out |
-| `FavoriteButton.tsx` | Add/remove favorites |
-| `GridItemCard.tsx` | Grid item display |
-| `MovieTrailer.tsx` | YouTube trailer embed |
-| `SafeYouTubeEmbed.tsx` | Validated YouTube embed |
-| `TrendingSection.tsx` | Trending content carousel |
-| `TopRatedMovies.tsx` | Top-rated display |
-| `Watchlist.tsx` | Watchlist management |
+Transactions: non-atomic per-route writes except atomic quota `findOneAndUpdate upsert` (`lib/security/quota.ts:44-56`) and atomic list-cap rollback (`app/api/favorites/route.ts:126-136`). Account deletion is staged "All Writes" (collections→cache noop→user last), retry-safe, partial-failure reported (`lib/privacy-service.ts:155-181`), replica-set `withTransaction` optional per docs.
 
-**Layout Components:**
-| Component | Purpose |
-|-----------|---------|
-| `layout/FeatureNavItems.tsx` | Nav items with feature flags |
-| `AdminNavLink.tsx` | Admin-only nav link |
-| `home/LatestTrailers.tsx` | Home trailers section |
-| `home/PopularMovies.tsx` | Home popular movies |
+Caches: namespace `movie-recommendation-system:{production|development}:v1:` (`lib/cache-namespace.ts:19-28`); scopes `public:tmdb`, `user:recommendations`, `security:rate-limit`, `admin:cache-metadata`, `public:ai-similar` (`lib/cache-namespace.ts:27-34`); TTLs: search 300s, movie details 1800s, recs 3600s, ai-similar 86400s, TMDB fetch revalidate 3600s. Invalidation: admin-scoped + per-movie/TV/home (`lib/cacheManager.ts:22-57`); never FLUSHDB/KEYS (SCAN only).
 
-**Admin Components:**
-| Component | Purpose |
-|-----------|---------|
-| `admin/CacheManagement.tsx` | Cache stats & controls |
-| `admin/DashboardOverview.tsx` | Dashboard stats |
-| `admin/SystemSettings.tsx` | Feature toggles |
-| `admin/UserManagement.tsx` | User list & roles |
-
-### `hooks/` — Custom React Hooks
-
-| Hook | Purpose |
-|------|---------|
-| `useFavorites.ts` | Favorites state management |
-| `useWatchlist.ts` | Watchlist state management |
-| `useFeatures.ts` | Feature flag checking |
-| `useDebounce.ts` | Debounce utility |
-| `useInfiniteScroll.ts` | Infinite scroll |
-| `use-mobile.tsx` | Mobile detection |
-| `use-toast.ts` | Toast notifications |
-
-### `scripts/` — Operator Tools
-
-| Script | Purpose |
-|--------|---------|
-| `setupDatabase.cts` | Database setup (destructive) |
-| `promote-owner.js` | CLI to promote user to owner |
-| `testRedisConnection.ts` | Test Redis connectivity |
-| `download-genre-images.js` | Download genre backdrop images |
-
-### `types/` — Type Definitions
-
-| File | Purpose |
-|------|---------|
-| `gemini.ts` | Gemini API response types |
-| `next-auth.d.ts` | NextAuth module augmentation |
-
-### `tests/` — Security Tests
-
-All security-focused tests using Vitest:
-- `ai-browser-security.test.ts` — AI prompt injection tests
-- `ai-markdown-security.test.tsx` — XSS protection tests
-- `chat-trust-boundary.test.ts` — Chat trust boundary tests
-- `operational-security.test.ts` — Operational security tests
-- `privacy-account-security.test.ts` — Account deletion privacy tests
-- `promote-users-security.test.ts` — Owner promotion security tests
-- `redis-cache-security.test.ts` — Redis cache security tests
-- `user-security.test.ts` — Auth/authorization tests
-
----
-
-## Data Model
-
-### Entity Relationship
+Retention/deletion: `HISTORY 180d / CHAT 365d` defaults, bounds 1..3650 (`lib/privacy-retention.ts:11-16`); enforced at query time (`updatedAt/viewedAt $gte cutoff`) in history/chat/export routes — **not** by DB TTL (see DATA-001). PII: email/userId/title/message are PII — never logged (operational-log blocklist `lib/operational-log.ts:25-39`, redact helpers). Encryption at rest/in transit: `Unknown:` no repo evidence beyond `mongodb+srv`/https URLs.
 
 ```mermaid
 erDiagram
-    USER {
-        string _id PK
-        string email UK
-        string name
-        string image
-        enum role "user|admin|owner"
-        object preferences
-        date created_at
-    }
-    
-    CHAT_HISTORY {
-        string _id PK
-        string userId FK
-        array messages
-        date createdAt
-        date updatedAt
-    }
-    
-    HISTORY {
-        string _id PK
-        string userId FK
-        number itemId
-        enum type "movie|tv|person"
-        string title
-        string posterPath
-        date viewedAt
-    }
-    
-    FAVORITES {
-        string _id PK
-        string userId FK
-        number itemId
-        enum type "movie|tv|person"
-        string title
-        string posterPath
-        date createdAt
-    }
-    
-    WATCHLIST {
-        string _id PK
-        string userId FK
-        number itemId
-        enum type "movie|tv|person"
-        string title
-        string posterPath
-        date createdAt
-    }
-    
-    MOVIE {
-        string _id PK
-        string title
-        string overview
-        number tmdbId UK
-        string posterPath
-        array genres
-        date releaseDate
-        number rating
-        number popularity
-        enum type "movie|tv"
-    }
-    
-    RATING {
-        string _id PK
-        string userId FK
-        number tmdbId FK
-        number score
-        string review
-        date createdAt
-    }
-
-    USER ||--o{ CHAT_HISTORY : owns
-    USER ||--o{ HISTORY : owns
-    USER ||--o{ FAVORITES : owns
-    USER ||--o{ WATCHLIST : owns
-    USER ||--o{ RATING : writes
+  USER ||--o{ FAVORITES : owns
+  USER ||--o{ WATCHLIST : owns
+  USER ||--o{ HISTORY : views
+  USER ||--o{ CHATHISTORY : chats
+  USER ||--o{ USAGEQUOTA : "quota per day"
+  USER ||--|| REVOKEDSESSION : "jti blocklist (global)"
 ```
 
-### Schema Details
+## 11. API and interface surface
 
-#### User (`lib/models/User.ts`)
-```typescript
-{
-  email: string (required, unique)
-  name?: string
-  image?: string
-  role: 'user' | 'admin' | 'owner' (default: 'user')
-  preferences: {
-    favorite_genres: string[]
-    selected_moods: string[]
-    historyTrackingEnabled: boolean (default: true)
-  }
-  created_at: Date
-}
-```
+Conventions: `requireUser` (fresh DB role + revocation) for personal/AI/admin; `requireAdmin/requireOwner` for admin; `applyRateLimitUser/Public` everywhere except `/api/features`, health, promote/users stubs; `assertSameOriginOrReject` on cookie-authed mutations; strict Zod bodies; generic 500s; 401 unauthenticated / 403 unauthorized-or-missing-chat / 404 user-not-found / 429 quota/rate.
 
-#### ChatHistory (`lib/models/ChatHistory.ts`)
-```typescript
-{
-  userId: string (required)
-  messages: [{
-    role: 'user' | 'assistant'
-    content: string (required)
-    timestamp: Date
-  }]
-  createdAt: Date
-  updatedAt: Date
-}
-```
-- **Retention:** Bounded to 200 messages per chat (`$slice: -200`)
-- **Environment config:** `CHAT_RETENTION_DAYS` (default 365)
+Public TMDB proxy (IP rate-limited, cached `public:tmdb`): `GET /api/trending`, `/api/trending/movie`, `/api/trending/tv` (latter two uncached — see PERF-002), `/api/movies`, `/api/movies/time-based` (optional `tryRequireUser` personalization), `/api/movies/top-rated`, `/api/tv/top-rated`, `/api/genres` (strict 10/min, ~20 fan-out), `/api/genre/[id]`, `/api/genre/[id]/content`, `/api/movie/[id]`, `/api/movie/[id]/recommendations`, `/api/movie/[id]/similar`, `/api/tv/[id]`, `/api/tv/[id]/recommendations`, `/api/tv/[id]/similar`, `/api/actor/[id]`, `/api/celebrities`, `/api/search` (30/min, 200-char cap), `/api/mood-recommendations`, `/api/trailers` (strict 10/min).
 
-#### History (`lib/models/History.ts`)
-```typescript
-{
-  userId: string (required)
-  itemId: number (required)
-  type: 'movie' | 'tv' | 'person'
-  title: string (required)
-  posterPath: string | null
-  viewedAt: Date (default: now)
-}
-```
-- **Index:** Unique compound `{ userId, itemId, type }`
-- **Retention:** `HISTORY_RETENTION_DAYS` (default 180)
+Authenticated personal: `GET|POST|DELETE /api/favorites`, `/api/watchlist` (500 cap); `GET /api/watchlist/details` (50-item cap, pool 8, 1800s); `GET|POST|DELETE /api/history` (person allowed, consent-gated); `GET /api/user` + `PUT /api/user` (preferences only); `GET /api/user/export` (5/5min); `DELETE /api/user/account` (2/5min, `DELETE_MY_ACCOUNT` literal); `GET|POST|DELETE /api/chat-history`, `GET /api/chat-history/list` (100 cap), `GET|DELETE /api/chat-history/[id]`; `POST /api/chat` (chat quota); `GET /api/ai-recommendations` (recs quota, hash-cache); `GET /api/movie/[id]/ai-similar` (per-user limit, 24h cache); `POST /api/users` always 403 disabled; `POST|GET /api/admin/promote` always 404.
 
-#### Favorites (`lib/models/FavoritesModel.ts`)
-```typescript
-{
-  userId: string (required)
-  itemId: number (required)
-  type: 'movie' | 'tv' | 'person'
-  title: string
-  posterPath: string | null
-  createdAt: Date
-}
-```
-- **Upsert pattern:** `findOneAndUpdate` with `upsert: true`
+Admin (`requireAdmin`): `GET|PUT /api/admin/users` (ObjectId zod, last-owner + self-demotion guards), `GET /api/admin/stats` (counts + cache stats + growth), `GET|POST /api/admin/settings` (`{config:{features:{aiAssistant}}}` strict), `GET|POST|DELETE /api/admin/cache` (invalidate/clear, 1000-key cap).
 
-#### Watchlist (`lib/models/WatchlistModel.ts`)
-Same structure as Favorites.
+System: `GET /api/health/live` (sync, no deps); `GET /api/health/ready` (config gate + 2s mongo ping, redis optional label); `GET /api/features` (public, 503 fail-closed); `GET|POST /api/auth/[...nextauth]` (IP 30/min wrapper).
 
-#### Movie (`lib/models/Movie.ts`)
-```typescript
-{
-  title: string (required)
-  overview: string (required)
-  tmdbId: number (required, unique)
-  posterPath: string
-  genres: string[]
-  releaseDate: Date
-  rating: number
-  popularity: number
-  type: 'movie' | 'tv'
-}
-```
-- **Timestamps:** `true` (adds `createdAt`, `updatedAt`)
+No GraphQL/RPC/WS/SSE/queues/cron/deep-links/MCP in repo.
 
-#### Rating (`lib/models/Rating.ts`)
-```typescript
-{
-  userId: string (required)
-  tmdbId: number (required)
-  score: number (1-10)
-  review: string
-  createdAt: Date
-}
-```
+## 12. Critical end-to-end flows
 
----
+### F1 — Google sign-in → JWT → session (Verified)
 
-## API Surface
-
-### Authentication
-
-| Mechanism | Implementation |
-|-----------|---------------|
-| Provider | Google OAuth 2.0 |
-| Session Strategy | JWT (30-day maxAge) |
-| Cookies | `__Secure-next-auth.*` (httpOnly, SameSite=lax, secure in prod) |
-| CSRF | `__Host-next-auth.csrf-token` |
-
-### Authorization Roles
-
-| Role | Capabilities |
-|------|-------------|
-| `user` | Own data (favorites, watchlist, history, chat) |
-| `admin` | All user capabilities + user management, cache management, stats |
-| `owner` | All admin capabilities + account deletion protection bypass |
-
-### Rate Limits (`lib/security/rateLimit.ts`)
-
-| Key | Limit | Window | Scope |
-|-----|-------|--------|-------|
-| `chat` | 10 | 60s | Per-user |
-| `aiRecommendations` | 5 | 60s | Per-user |
-| `aiSimilar` | 10 | 60s | Per-user |
-| `search` | 30 | 60s | Per-IP |
-| `tmdbProxy` | 60 | 60s | Per-IP |
-| `mood` | 20 | 60s | Per-IP |
-| `auth` | 10 | 60s | Per-IP |
-| `adminMutation` | 30 | 60s | Per-user |
-| `userExport` | 5 | 5min | Per-user |
-| `accountDelete` | 2 | 5min | Per-user |
-
-### Request Validation
-
-All input validated with Zod schemas (`lib/security/schemas.ts`):
-- `.strict()` on all object schemas (rejects unknown fields)
-- Max length bounds on all strings
-- Positive integer validation for IDs
-- No `$` operators or dotted keys allowed
-
-### Content Security Policy
-
-```http
-Content-Security-Policy:
-  default-src 'self';
-  script-src 'self';
-  style-src 'self' 'unsafe-inline';
-  img-src 'self' data: https://image.tmdb.org https://lh3.googleusercontent.com;
-  frame-src https://www.youtube-nocookie.com;
-  connect-src 'self'
-```
-
----
-
-## End-to-End Flows
-
-### 1. User Sign-In Flow
+Trigger: `GET /auth/signin` → Google OAuth. Entry: `app/api/auth/[...nextauth]/route.ts:28-32` → `authOptions` (`lib/auth.ts:40-56`). `signIn` creates `User{role:user}` or fails closed (`lib/auth.ts:130-164`). `jwt` assigns `randomUUID jti` once, projects fresh DB role/preferences, fail-closed on missing id (`lib/auth.ts:58-129`). `session` projects from JWT only (no DB hot path) (`lib/auth.ts:165-195`). `signOut` upserts `RevokedSession{jti,expiresAt}` with TTL (`lib/auth.ts:199-250`). Tests: `tests/session-lifecycle.test.ts`, `tests/signin-log-hygiene.test.ts`.
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant B as Browser
-    participant NA as NextAuth
-    participant G as Google
-    participant MG as MongoDB
-
-    U->>B: Click "Sign in with Google"
-    B->>NA: /api/auth/signin/google
-    NA->>G: OAuth redirect
-    G-->>NA: Authorization code
-    NA->>G: Exchange for tokens
-    G-->>NA: ID token, access token
-    NA->>NA: Create JWT session
-    NA->>MG: Find or create user
-    MG-->>NA: User record
-    NA-->>B: Set cookies, redirect
-    B->>U: Authenticated session
+  Browser->>NextAuth: GET /api/auth/signin (Google)
+  NextAuth->>Mongo: findOne/create User
+  NextAuth->>Browser: JWT cookie (jti, 24h)
+  Browser->>API: cookie + Origin/Referer
+  API->>Mongo: requireUser (fresh role + RevokedSession.exists)
+  API->>Browser: 401/403 or data
 ```
 
-**Key Files:**
-- `lib/auth.ts` (lines 23-163): `authOptions` configuration
-- `middleware.ts` (lines 58-95): Route protection
-
-### 2. Movie Discovery Flow
-
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant API as /api/movies
-    participant Cache as RedisCache
-    participant TMDB as TMDB API
-
-    B->>API: GET /api/movies
-    API->>Cache: getOrSet('movies:home')
-    alt Cache hit
-        Cache-->>API: Cached data
-    else Cache miss
-        API->>TMDB: /movie/popular
-        API->>TMDB: /movie/top_rated
-        API->>TMDB: /genre/movie/list
-        TMDB-->>API: Results
-        API->>Cache: set('movies:home', data, 21600)
-    end
-    API-->>B: JSON response
-```
-
-**Key Files:**
-- `app/api/movies/route.ts`
-- `lib/cache.ts` (lines 288-334): `getOrSet` with stampede protection
-
-### 3. AI Chat Flow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant C as ChatAssistant
-    participant API as /api/chat
-    participant AUTH as requireSession
-    participant RL as RateLimit
-    participant MG as MongoDB
-    participant Gemini as Google Gemini
-
-    U->>C: Type message
-    C->>API: POST { message, chatId? }
-    API->>AUTH: requireSession()
-    alt Unauthenticated
-        AUTH-->>C: 401
-    end
-    API->>RL: applyRateLimitUser('chat')
-    alt Rate limited
-        RL-->>C: 429
-    end
-    API->>MG: Load chat history
-    MG-->>API: History messages
-    API->>Gemini: POST generateContent
-    Gemini-->>API: AI response
-    API->>MG: Push messages to ChatHistory
-    API-->>C: { response, chatId }
-    C->>U: Display response
-```
-
-**Key Files:**
-- `app/api/chat/route.ts` (full file)
-- `lib/gemini-payload.ts`: Payload construction
-- `lib/ai-security.ts`: URL validation, error handling
-
-### 4. Favorites Management Flow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant B as Browser
-    participant API as /api/favorites
-    participant AUTH as requireSession
-    participant MG as MongoDB
-
-    U->>B: Click heart icon
-    B->>API: POST { itemId, type, title, posterPath }
-    API->>AUTH: requireSession()
-    AUTH-->>API: User
-    API->>API: listItemSchema.safeParse(body)
-    alt Validation fails
-        API-->>B: 400
-    end
-    API->>MG: findOneAndUpdate (upsert)
-    MG-->>API: Saved document
-    API-->>B: 200 + favorite data
-```
-
-**Key Files:**
-- `app/api/favorites/route.ts`
-- `lib/security/schemas.ts` (lines 36-43): `listItemSchema`
-
-### 5. Admin User Management Flow
-
-```mermaid
-sequenceDiagram
-    participant A as Admin
-    participant API as /api/admin/users
-    participant AUTH as requireAdmin
-    participant MG as MongoDB
-
-    A->>API: PATCH { userId, updates: { role } }
-    API->>AUTH: requireAdmin()
-    alt Not admin
-        AUTH-->>A: 403
-    end
-    API->>API: wouldRemoveLastOwner check
-    alt Would remove last owner
-        API-->>A: 400
-    end
-    API->>MG: updateOne role
-    MG-->>API: Result
-    API-->>A: 200
-```
-
-**Key Files:**
-- `app/api/admin/users/route.ts`
-- `lib/security/auth.ts` (lines 197-217): `wouldRemoveLastOwner`
-
----
-
-## Security Architecture
-
-### Defense-in-Depth Layers
-
-```mermaid
-graph TB
-    subgraph Edge["Edge Protection"]
-        CSP["Content Security Policy"]
-        HSTS["HSTS Headers"]
-        XFO["X-Frame-Options: DENY"]
-    end
-    
-    subgraph Middleware["Middleware Layer"]
-        AUTH_M["Token Verification"]
-        FEAT["Feature Flag Enforcement"]
-        RATE_M["Rate Limit (coarse)"]
-    end
-    
-    subgraph API["API Layer"]
-        AUTH_Z["requireSession/Admin"]
-        VALID["Zod Validation"]
-        RATE_A["Rate Limit (fine)"]
-        RLIMIT["Resource Limits"]
-    end
-    
-    subgraph Data["Data Layer"]
-        RBAC["Role-Based Access"]
-        SCHEMA["Mongoose Schema"]
-        IDX["Unique Indexes"]
-    end
-
-    CSP --> AUTH_M
-    AUTH_M --> AUTH_Z
-    AUTH_Z --> RBAC
-```
-
-### Key Security Controls
-
-| Control | Implementation | Location |
-|---------|---------------|----------|
-| **Authentication** | NextAuth + Google OAuth | `lib/auth.ts` |
-| **Authorization** | `requireSession/User/Admin/Owner` | `lib/security/auth.ts` |
-| **Input Validation** | Zod `.strict()` schemas | `lib/security/schemas.ts` |
-| **Rate Limiting** | Redis + memory fallback | `lib/security/rateLimit.ts` |
-| **Cache Isolation** | Key namespacing | `lib/cache-namespace.ts` |
-| **Prompt Injection** | System instruction hardening | `lib/gemini-payload.ts` |
-| **XSS Prevention** | React escaping, CSP | `next.config.mjs` |
-| **CSRF** | SameSite cookies, CSRF token | `lib/auth.ts` |
-| **NoSQL Injection** | Schema validation, no raw queries | All API routes |
-| **Mass Assignment** | `.strict()` Zod schemas | `lib/security/schemas.ts` |
-
-### Secrets Management
-
-| Secret | Source | Usage |
-|--------|--------|-------|
-| `NEXTAUTH_SECRET` | Env | JWT signing |
-| `GOOGLE_CLIENT_ID` | Env | OAuth |
-| `GOOGLE_CLIENT_SECRET` | Env | OAuth |
-| `GOOGLE_API_KEY` | Env | Gemini (passed via header, never URL) |
-| `TMDB_API_KEY` | Env | TMDB API |
-| `MONGODB_URI` | Env | Database |
-| `REDIS_URL`/`REDIS_*` | Env | Cache |
-
-**Note:** `GOOGLE_API_KEY` is sent via `x-goog-api-key` header, never in URL query params.
-
-### AI Security (`lib/ai-security.ts`)
-
-- **URL Validation:** HTTPS-only, no credentials, no control chars
-- **YouTube Embed:** 11-char video ID validation
-- **Prompt Injection Defense:** System instructions, "UNTRUSTED_" data prefixing
-- **Output Limiting:** Max response length 4000 chars
-- **Fenced JSON Extraction:** Bounded parsing for structured output
-
----
-
-## Performance Analysis
-
-### Caching Strategy
-
-```mermaid
-flowchart LR
-    A[Request] --> B{Redis available?}
-    B -->|Yes| C{Redis hit?}
-    C -->|Yes| D[Return cached]
-    C -->|No| E[Fetch from origin]
-    E --> F[Write to Redis]
-    F --> G[Return data]
-    B -->|No| H{Memory cache hit?}
-    H -->|Yes| I[Return cached]
-    H -->|No| E
-```
-
-**Cache Layers:**
-1. **Redis** (primary): Shared across instances, 1h default TTL
-2. **In-Memory** (fallback): Per-instance, 5000 entry limit, LRU eviction
-
-**Key Patterns:**
-- `getOrSet` with in-flight deduplication (stampede protection)
-- Bounded SCAN for key iteration (never `KEYS`)
-- Namespace isolation (`security:rate-limit:` vs `app:cache:`)
-
-### Identified Bottlenecks
-
-| Issue | Location | Impact | Recommendation |
-|-------|----------|--------|----------------|
-| No MongoDB indexing on frequent queries | `lib/models/*.ts` | Slow user data fetches | Add compound indexes for `{ userId, createdAt }` |
-| Memory cache cleanup interval | `lib/cache.ts:27-28` | Stale entries accumulate | Consider shorter cleanup window |
-| Chat history unbounded growth | `app/api/chat/route.ts:171` | Document size creep | `$slice: -200` mitigates; consider TTL |
-| No response compression | `next.config.mjs` | Larger payloads | Enable `compress: true` (default in prod) |
-| Sequential session + user lookup | `lib/auth.ts:91-97` | Double DB hit on session | Cache role in JWT, refresh on change |
-
-### Scalability Considerations
-
-- **Stateless:** JWT sessions enable horizontal scaling
-- **Redis:** Shared cache across instances
-- **MongoDB Connection:** Pooled via global cache in `lib/mongodb.ts`
-- **Rate Limiting:** Redis-backed for cross-instance consistency
-
----
-
-## Code Quality Findings
-
-### Strengths
-
-| Aspect | Evidence |
-|--------|----------|
-| **Security-first** | 8+ security test files, multiple audit reports |
-| **Input validation** | Zod `.strict()` on all API boundaries |
-| **Error handling** | Structured errors, no silent failures |
-| **Role re-validation** | `requireUser` fetches fresh role from DB |
-| **Cache safety** | No `FLUSHDB`, bounded SCAN, namespace isolation |
-| **AI hardening** | Prompt injection defenses, URL validation |
-
-### Issues & Recommendations
-
-| Issue | Location | Severity | Recommendation |
-|-------|----------|----------|----------------|
-| **Unused fields** | `Movie.ts:10-12` (rating, popularity) | Low | Remove unused schema fields or implement |
-| **Missing indexes** | All models except `History.ts` | Medium | Add indexes for common queries |
-| **Test coverage** | Only security tests exist | Medium | Add unit tests for business logic |
-| **Rate limit IP trust** | `rateLimit.ts:76-89` | Low | Document reliance on `x-forwarded-for` |
-| **Console.error in auth** | `auth.ts:54,117,84` | Low | Use structured logger |
-| **Hardcoded limits** | Various magic numbers | Low | Extract to config/constants |
-
-### Dead Code
-
-| File | Status |
-|------|--------|
-| `lib/prisma.ts` | Deleted (marked as `D` in git status) |
-| `lib/db.ts` | Deleted |
-| `lib/dbUtils.ts` | Deleted |
-| `lib/settings.ts` | Deleted |
-| `lib/models/Movie.ts` | Exists but `rating`/`popularity` unused |
-| `app/redis-demo/` | Deleted |
-| `app/api/redis-example/` | Deleted |
-| `app/api/favorites/enhanced-details/` | Deleted |
-| `app/api/watchlist/enhanced-details/` | Deleted |
-
----
-
-## Deployment & Operations
-
-### Environment Variables
-
-**Required:**
-```
-MONGODB_URI=mongodb+srv://...
-TMDB_API_KEY=...
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-NEXTAUTH_SECRET=... (32+ chars)
-NEXTAUTH_URL=https://your-domain.com
-```
-
-**Optional:**
-```
-GOOGLE_API_KEY=... (enables AI features)
-REDIS_URL=redis://... (falls back to memory cache)
-REDIS_HOST/REDIS_PORT/REDIS_USERNAME/REDIS_PASSWORD
-HISTORY_RETENTION_DAYS=180 (1-3650)
-CHAT_RETENTION_DAYS=365 (1-3650)
-```
-
-### Build & Deploy
-
-```bash
-# Development
-npm run dev
-
-# Production build
-npm run build
-
-# Start production server
-npm run start
-
-# Verification pipeline
-npm run verify  # lint + typecheck + test + build
-
-# Database setup (destructive - use with caution)
-npm run setup-db
-
-# Test Redis connection
-npm run test-redis
-```
-
-### Health Checks
-
-| Endpoint | Purpose | Expected Response |
-|----------|---------|-------------------|
-| `GET /api/health/live` | Liveness | `{ status: 'ok' }` |
-| `GET /api/health/ready` | Readiness | `{ status: 'ok', config: {...} }` |
-
-### Monitoring Suggestions
-
-- **Uptime:** Ping `/api/health/live` every 30s
-- **Readiness:** Check `/api/health/ready` before routing traffic
-- **Redis:** Monitor `redisHealth` state via admin cache endpoint
-- **MongoDB:** Track connection pool size and query times
-- **Rate Limits:** Alert on 429 spike patterns
-
-### CI/CD (`.github/workflows/ci.yml`)
-
-The repository includes GitHub Actions workflow for continuous integration. Expected checks:
-- ESLint
-- TypeScript typecheck
-- Vitest test suite
-- Next.js build
-
-### Dependabot (`.github/dependabot.yml`)
-
-Automated dependency updates configured for npm ecosystem.
-
----
-
-## Glossary
-
-| Term | Definition |
-|------|------------|
-| **TMDB** | The Movie Database — external API for movie/TV metadata |
-| **Gemini** | Google's AI model (gemini-2.0-flash) for chat and recommendations |
-| **NextAuth** | Authentication library for Next.js |
-| **RBAC** | Role-Based Access Control (user, admin, owner) |
-| **Stampede Protection** | Deduplication of concurrent cache-miss fetches |
-| **CSP** | Content Security Policy — HTTP header restricting resource loading |
-| **HSTS** | HTTP Strict Transport Security |
-| **LRU** | Least Recently Used — cache eviction policy |
-| **ODM** | Object Document Mapper (Mongoose for MongoDB) |
-| **TTL** | Time To Live — cache entry expiration |
-| **PKCE** | Proof Key for Code Exchange — OAuth security extension |
-| **CSRF** | Cross-Site Request Forgery |
-
----
-
-## Mental Model
-
-### How to Think About This Codebase
-
-1. **Server-First Architecture:** All data fetching happens server-side. Pages render on the server, API routes handle mutations. The client only renders what the server provides.
-
-2. **Security at Every Layer:** Defense-in-depth is the core philosophy. Middleware is defense-in-depth only — every API route must independently verify auth. Validation happens at every boundary.
-
-3. **Cache-Safe by Design:** The cache layer never calls `FLUSHDB` or `KEYS`. All operations are bounded, namespaced, and fail-safe to memory fallback.
-
-4. **Trust Boundaries:** The client is never trusted. User identity, roles, and resource ownership are always verified server-side. The `previousMessages` field in chat requests is explicitly ignored.
-
-5. **AI as Untrusted:** Gemini outputs are treated as untrusted data. Structured JSON is extracted and validated. URLs are validated before use. System instructions explicitly mark user data as untrusted.
-
-6. **Graceful Degradation:** Redis is optional. AI is optional. The application works (with reduced features) when these services are unavailable.
-
-### Key Patterns to Remember
-
-- **Always use `requireSession`/`requireUser`/`requireAdmin`** — never `getServerSession` directly in routes
-- **Always `.strict()` on Zod schemas** — reject unknown fields
-- **Always namespace cache keys** — `CACHE_NAMESPACE` prefix
-- **Always check `historyTrackingEnabled`** — before recording history
-- **Always use `$slice` on unbounded arrays** — prevent document growth
-
----
-
-*Blueprint generated: 2026-08-29*
-*Repository: movie-recommendation-system*
-*Last state: Multiple security hardening iterations completed (R1-R8)*
+### F2 — Public trending browse (Verified)
+
+`app/page.tsx:43-58` `fetch('/api/trending')` → `app/api/trending/route.ts:14` `applyRateLimitPublic(tmdbProxy)` → `redisCache.getOrSet(public:tmdb…)` → TMDB `fetchJsonWithRetry` (8s/2 retries, revalidate 3600) → JSON. No auth/origin. Failure: hero error + retry (`app/page.tsx:217-228`).
+
+### F3 — Favorites toggle with cap+rollback (Verified)
+
+`FavoriteButton` → `FavoritesContext` optimistic POST → `app/api/favorites/route.ts:37-148`: `requireUser` → origin → `listItemSchema.strict()` → `listWrite` 20/min → `countDocuments` + `exists` pre-check → `findOneAndUpdate upsert new:true` → post-write count → overshoot `deleteOne(res._id)` 400. `DELETE` uses query `itemId+type` strict movie|tv. Tests: `tests/favorites-context.test.tsx`, `tests/list-capacity-security.test.ts`.
+
+### F4 — AI chat (Verified)
+
+`ChatAssistant` POST `{message,chatId?}` → `app/api/chat/route.ts:132`: `requireUser` (revocation-checked) → origin → per-user `chat:10/min` → `consumeQuota(chats,50)` → `chatRequestSchema` (ignores `previousMessages`) → load `ChatHistory{chatId,userId}` or 403 → `boundChatHistory` (20 msgs/8000 chars) → `buildChatGeminiPayload` + `x-goog-api-key` POST 15s, 1 retry on UNAVAILABLE → `$push $slice:-200` or `create` → `trimCollection(100)` → `{response,chatId}`. AI errors mapped to 429/502/503/504 (`lib/ai-security.ts:236-259`). Tests: `tests/chat-trust-boundary.test.ts`, `tests/quota-security.test.ts`.
+
+### F5 — AI recommendations (Verified)
+
+`ForYouSection` GET → `app/api/ai-recommendations/route.ts:136`: `requireUser` → 5/min → load history(200)/watchlist(500)/favorites(500) → empty-lists early `{needsContent:true}` → sha16 content-hash key → `redisCache.get` hit returns → else `consumeQuota(recs,20)` → Gemini `buildRecommendationGeminiPayload` (3× backoff) → Zod `aiRecommendationsSchema` (≤12) → TMDB `search/multi` enrichment pool 4 → dedupe/balance → `redisCache.set 3600s`. Fallbacks: popular movies/TV on AI failure. Notable: `item.id` vs model `itemId` mismatch (REL-003).
+
+### F6 — Admin user update (Verified)
+
+`UserManagement.tsx` PUT → `app/api/admin/users/route.ts:74`: `requireAdmin` → origin → `adminMutation` 30/min → `adminUpdateSchema` (ObjectId) → self-demotion/owner-only/admin-scope/last-owner checks → allowlisted `$set` only. Tests: `tests/redis-cache-security.test.ts` (R4-E matrix).
+
+### F7 — Privacy export/delete (Verified)
+
+Export `app/api/user/export/route.ts:33`: `requireUser` → `userExport` 5/5min → parallel projected finds (cutoffs applied, 500/100 caps) → `buildExportObject` → `attachment movie-data-export.json`, `no-store`. Delete `app/api/user/account/route.ts:42`: `requireUser` → `accountDelete` 2/5min → origin → `confirmation:DELETE_MY_ACCOUNT` strict → `mayDeleteOwnAccount` fresh role → staged `deleteAccountAllWrites`. Tests: `tests/privacy-account-security.test.ts`.
+
+## 13. Authentication, authorization, and trust boundaries
+
+- **IdP/login:** Google OAuth only (`lib/auth.ts:41-46`). Custom signin page `app/auth/signin/page.tsx`. No passwords/credentials provider. `NEXTAUTH_SECRET` ≥32 chars enforced non-test (`lib/env.ts:157-164`); prod `NEXTAUTH_URL` https (`lib/env.ts:168-176`).
+- **Session/token:** JWT strategy 24h sliding (`maxAge 86400/updateAge 3600`, `lib/auth.ts:47-53`); `jti randomUUID` per token; secure `__Secure/__Host` cookie names + `httpOnly/lax/secure(path /)` in prod (`lib/auth.ts:257-295`); server revocation via `RevokedSession` TTL checked in `requireUser` (`lib/security/auth.ts:95-110`); `tryRequireUser` skips revocation check (optional-personalization path — see SEC-004).
+- **Authorization:** `requireSession` (401) → `requireUser` (fresh DB role, 401/500) → `requireAdmin` (admin|owner, 403) / `requireOwner` (owner, 403) (`lib/security/auth.ts:50-239`). Route-level enforcement universal for personal/AI/admin; middleware is UX defense-in-depth only (`middleware.ts:52-79`). Admin page server guard redirects (`app/admin/layout.tsx:20-40`).
+- **Trust transitions:** client `previousMessages`/ids/emails/roles never trusted (server re-read); chat-history id ownership checked `{_id,userId}` (`app/api/chat/route.ts:184-195`); export/delete identity from session only; admin `userId` must be ObjectId (CastError→400, `lib/security/schemas.ts:24-27`).
+- **CSRF/origin:** `assertSameOriginOrReject` requires Origin→Referer→Sec-Fetch-Site, else 403, on all cookie-authed mutations (`lib/security/auth.ts:241-311`). No CORS config (same-origin only, CSP `connect-src 'self'`).
+- **Gaps:** `tryRequireUser` bypasses revocation (SEC-004, low); middleware JWT check is presentation-layer (documented, not a gap); no server-side session absolute-timeout beyond JWT maxAge.
+
+## 14. External integrations
+
+| Provider | Purpose/caller | Config/auth | Data/timeout/retry | Errors/tests/risks |
+|---|---|---|---|---|
+| Google OAuth | login `lib/auth.ts:41-46` | `GOOGLE_CLIENT_ID/SECRET` | code exchange by next-auth | fail-closed signin false; tests mock; risk: misconfigured redirect URIs (Unknown: no prod URL) |
+| TMDB v3 | catalog `lib/tmdb.ts:6-170` + ~25 routes | `TMDB_API_KEY` query param server-side | details/lists/search; 8s/2 retries, revalidate 3600 | generic 500s, no key leak (redacted logs `lib/fetchWithRetry.ts:14-24`); risk: quota theft via open proxy mitigated by rate limits; fan-out cost in genres/ai-similar |
+| Gemini generateContent | chat/recs/similar `lib/gemini-payload.ts`, routes | `GOOGLE_API_KEY` header `x-goog-api-key`, model `GEMINI_MODEL` default `gemini-3.7-flash` | prompts bounded (8000 ctx, 500 overview, 8000 prefs); 15s timeout | mapped codes, redacted bodies, Zod output; residual prompt-injection documented in system prompts; cost risk without per-day quotas (mitigated) |
+| MongoDB | all persistence `lib/mongodb.ts` | `MONGODB_URI` mongodb:// or srv | buffered off, global cached | readiness ping 2s; risk: standalone (no txn) partial delete (documented) |
+| Redis/Upstash | cache + rate counters `lib/redis.ts`, `lib/redis-config.ts` | `REDIS_URL` or HOST/PORT/USER/PASS/TLS, 3s connect, queue 500, offline-queue off | namespaced keys, INCR+pExpire | memory fallback; max-clients 5-strike disable + 5min cooldown; risk: shared-instance pressure (calibrated) |
+
+No email/SMS/analytics/error-monitoring provider integrated (`lib/operational-log.ts:98-107` stdout JSON only).
+
+## 15. Configuration and environment variables
+
+Catalog (names only, no values; `lib/env.ts:52-77` shape, `.env.example:1-53`):
+
+| Name | Required | Purpose/consumers | Format/default | Sensitive |
+|---|---|---|---|---|
+| `NODE_ENV` | no | env switch, namespace prod/dev, cookie names | `development\|test\|production` | no |
+| `NEXTAUTH_URL` | prod yes | origin gate expected origin, OAuth callback | https URL prod | no |
+| `NEXTAUTH_SECRET` | yes (non-test) | JWT signing `lib/auth.ts:56` | ≥32 chars | **yes** |
+| `GOOGLE_CLIENT_ID/SECRET` | yes (non-test) | OAuth provider | opaque | **yes (secret)** |
+| `MONGODB_URI` | yes (non-test) | `lib/mongodb.ts:3` | `mongodb://` or `mongodb+srv://` | **yes** |
+| `TMDB_API_KEY` | yes (non-test) | `lib/tmdb.ts:6` + ~25 routes | opaque | **yes** |
+| `GOOGLE_API_KEY` | AI-only | `getGeminiApiKey()` | opaque; `aiFeaturesConfigured()` gate | **yes** |
+| `GEMINI_MODEL` | no | `getGeminiModel()` | default `gemini-3.7-flash` | no |
+| `REDIS_URL` / `REDIS_HOST/PORT/USERNAME/PASSWORD/TLS` | no | `buildRedisConfig()` | redis:// or rediss:// (TLS implied); contradictory redis://+TLS=true rejected | **yes (password/URL)** |
+| `TRUSTED_PROXY_CIDRS` | no | XFF walk `lib/security/rateLimit.ts:139-156` | CSV CIDR/IP; /0 rejected | no |
+| `HISTORY_RETENTION_DAYS` | no | `buildRetentionConfig()` | int 1..3650, default 180 | no |
+| `CHAT_RETENTION_DAYS` | no | same | default 365 | no |
+| `NEXT_RUNTIME` | runtime | instrumentation guard | `nodejs` | no |
+| `WIPE_PRODUCTION` | script | `scripts/setupDatabase.cts` guard | never set prod | n/a |
+
+`NEXT_PUBLIC_*` secrets rejected (`lib/env.ts:35-50`). Errors expose names/categories only (`lib/env.ts:108-235`).
+
+## 16. Local development guide
+
+Verified from `package.json:5-14`, `.env.example:1-53`, `instrumentation.ts:19-29`, `scripts/*`:
+
+1. **Prereqs:** Node 22 (CI `uses setup-node v4 node-version 22`), npm, MongoDB (local or Atlas), optional Redis. No Docker in repo.
+2. **Install:** `npm ci` (frozen lockfile; CI `ci.yml:30-31`).
+3. **Env:** copy `.env.example` → `.env.local`; fill `MONGODB_URI`, `NEXTAUTH_SECRET` (≥32 chars, `openssl rand -base64 32`), `GOOGLE_CLIENT_ID/SECRET` (Google Cloud console), `TMDB_API_KEY` (themoviedb.org), `GOOGLE_API_KEY` (AI features), `NEXTAUTH_URL=http://localhost:3000` dev. Redis optional: leave unset for memory fallback, or set `REDIS_URL` / `REDIS_HOST+PORT`.
+4. **DB:** no migrations. Optional destructive seed `npm run setup-db` — local only, never prod (script refuses production without explicit wipe flag).
+5. **Run:** `npm run dev` (dev, instrumentation skipped non-prod) → http://localhost:3000. Prod-like: `npm run build` + `npm start` (requires prod env incl. https `NEXTAUTH_URL`).
+6. **Test/lint:** `npm test` (vitest), `npm run lint`, `npm run typecheck`, `npm run verify` (all + build).
+7. **Diagnostics:** `npm run test-redis`; probes `GET /api/health/live` (process) and `/api/health/ready` (config+DB).
+8. **Troubleshoot:** boot throw = core env missing (read message names); Redis warn = memory fallback active; 503 features = DB down (fail-closed); 403 mutations = missing Origin/Referer (send same-origin headers); AI 502 = bad key/model, 503 = upstream down, 429 = quota.
+
+## 17. Build, deployment, and operations
+
+- **Build:** `next build` with `webpackBuildWorker` + parallel traces/compiles (`next.config.mjs:99-103`); images remote-pinned; CSP/security headers global (`next.config.mjs:24-98`). CI builds with placeholder env (`ci.yml:129-139`). Local `npm run build` needs real env or placeholders.
+- **CI/CD:** `.github/workflows/ci.yml` four jobs (validate lint+typecheck; test+coverage artifact; `npm audit --audit-level=high --omit=dev` + gitleaks v8.18.4 full-history; build). `contents:read`, cancel-in-progress. Dependabot weekly npm+actions (`.github/dependabot.yml`). No CD/release workflow, no artifact registry, no rollback automation in repo.
+- **Deployment:** `Unknown:` no Dockerfile/Compose/Vercel/IaC in repo (verified absent via glob). `Inferred:` platform-agnostic Node 22 (`next start`) behind proxy/CDN + managed Mongo + Upstash Redis, per `docs/ADR-001*` claims — not verified by IaC. Probes: liveness `/api/health/live`, readiness `/api/health/ready` (503 keeps traffic away when degraded).
+- **Migrations/rollback:** none (schemaless Mongoose, additive indexes). TTL retention is a documented **operator** migration with backups, not code (`lib/models/History.ts:26-31`, `lib/models/ChatHistory.ts:27-32`).
+- **Observability:** structured `ops {...}` JSON lines with PII blocklist (`lib/operational-log.ts:70-107`); no APM/Sentry/Datadog integration; health endpoints `no-store` + `nosniff`. Logs intentionally terse (no emails/URLs/keys).
+- **Backups/scaling:** no repo evidence (Unknown: operator-owned Mongo backups, Redis eviction policy). Stateless app + shared Redis + `getOrSet` stampede dedupe (`lib/cache.ts:313-359`) support horizontal scale; `Inferred:` JWT stateless + memory fallback per-instance means rate/cache diverge across replicas without shared Redis.
+- **Secrets:** store in platform secret manager, never `.env` commits (`.gitignore:19-24` ignores all variants); CI secret-scan enforced.
+
+## 18. Testing strategy and current test posture
+
+- **Types/locations:** 36 files in `tests/` (`*.test.ts` node project, `*.test.tsx` jsdom project, `vitest.config.mts:12-49`); coverage scope `app/api/**`, `lib/security/**`, `lib/ai-security.ts`, `lib/ai-markdown.tsx`, `lib/gemini-payload.ts`, `SafeYouTubeEmbed/Link` (`vitest.config.mts:35-47`).
+- **Commands:** `npm test` (run), `npm run test:watch`, `npm run test:coverage` (v8 text+html). CI runs test + coverage + artifact upload (`ci.yml:55-68`).
+- **Covered (verified by passing suite):** auth revocation/lifecycle, stale identity, origin gate, strict zod, rate-limit IP/coverage, quota, cache key normalization/personalization/queue calibration, chat trust boundary, AI browser/markdown XSS, features fail-closed, boot env/fatality, privacy export/delete/retention, admin matrix, edge imports, docs contract, favorites/watchlist contexts + N+1, a11y (M5), UI flows/consistency, perf M4 timeouts/caps.
+- **Not covered:** live TMDB/Gemini contract (mocked), multi-replica Redis divergence, replica-set transaction path, production boot with real secrets, E2E (no Playwright/Cypress in repo), load/chaos.
+- **Coverage %:** Unknown — no committed coverage artifact; local `test:coverage` not run in this audit (suite 349/349 passed, see §22).
+- **Reliability:** M4 timeout tests take ~15s each by design (34s file); no flaky indicators observed in single run.
+
+## 19. Engineering findings
+
+Summary matrix:
+
+| ID | Title | Sev / Conf / Status |
+|---|---|---|
+| REL-001 | Quota consumed before input validation (chat) | Medium / High / Confirmed |
+| PERF-001 | ai-similar enrichment unbounded `Promise.all` | Medium / High / Confirmed |
+| REL-002 | `lib/mongodb.ts` throws at import time | Medium / High / Confirmed |
+| DATA-001 | Retention read-filter only, no DB TTL | Medium / High / Confirmed |
+| REL-003 | Recs exclusion reads non-model `tmdbId` field | Medium / Medium / Probable |
+| PERF-002 | Uncached trending/movie+tv + heavy genres fan-out | Low / High / Confirmed |
+| SEC-004 | `tryRequireUser` skips revocation check | Low / High / Confirmed |
+| QUAL-001 | 94 lint warnings (dead imports/vars) | Low / High / Confirmed |
+| OPS-001 | No container/IaC/CD/rollback in repo | Info / High / Confirmed |
+| TEST-001 | No E2E / live-contract / coverage artifact | Info / High / Confirmed |
+
+### REL-001 — Quota consumed before input validation burns daily budget on bad input
+
+- **Category:** Correctness. **Severity:** Medium. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `app/api/chat/route.ts:154-176` (`consumeQuota` L154 before `request.json`/zod L162-176).
+- **Observed:** Invalid JSON/body still increments `UsageQuota.chats`. Same ordering in recs is safe (quota after cache-hit check) but chat is not.
+- **Why:** Attacker or buggy client can exhaust victim's own 50/day with malformed posts; legitimate typos cost quota.
+- **Trigger:** POST `/api/chat` with malformed JSON or overlong message while authenticated.
+- **Fix:** Parse + `chatRequestSchema.safeParse` first; consume quota only on valid input (after `chatId` ownership check or just before Gemini call). Keep rate-limit first.
+- **Validate:** unit test POST invalid body ×3 → quota doc unchanged, 400s returned.
+- **Effort:** S.
+
+### PERF-001 — ai-similar TMDB enrichment fans out unbounded in one `Promise.all`
+
+- **Category:** Performance. **Severity:** Medium. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `app/api/movie/[id]/ai-similar/route.ts:257-308` (`await Promise.all(aiSuggestions.map(...search/movie...))`, up to 12 parallel TMDB searches).
+- **Observed:** Cold path can fire 1 details + 1 Gemini + fallbacks + N searches concurrently; no pool (unlike recs pool-4 `app/api/ai-recommendations/route.ts:330-379` and watchlist pool-8 `app/api/watchlist/details/route.ts:20-49`).
+- **Why:** Latency tail, TMDB 429s, serverless connection pressure; retries amplify.
+- **Trigger:** cache-miss GET `/api/movie/[id]/ai-similar` returning ~12 suggestions.
+- **Fix:** batch with pool 4 (copy recs pattern), cache negative/partial results briefly, cap enrichment to 8.
+- **Validate:** mocked-TMDB concurrency counter test asserting max-inflight ≤4.
+- **Effort:** S.
+
+### REL-002 — Missing `MONGODB_URI` throws at module import, crashing any importer
+
+- **Category:** Reliability. **Severity:** Medium. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `lib/mongodb.ts:3-7` top-level `if (!MONGODB_URI) throw`.
+- **Observed:** Importing the module (tests, health, build) crashes instead of failing at connect time with a named error; works around via `isCoreConfigReady`/placeholders in CI.
+- **Why:** Fragile startup, harder to return 503 readiness; test setup must stub env before import.
+- **Fix:** defer throw to `connectToMongoDB()`; export `isMongoConfigured()` for readiness.
+- **Validate:** import without env succeeds; connect rejects with named error; readiness 503.
+- **Effort:** S.
+
+### DATA-001 — Retention is query-time filtering; expired rows remain in Mongo
+
+- **Category:** Data integrity. **Severity:** Medium. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `lib/models/History.ts:26-31`, `lib/models/ChatHistory.ts:27-32` (TTL commented, operator migration), reads filter `$gte cutoff` (`app/api/history/route.ts:60-64`, `app/api/chat-history/list/route.ts`, `app/api/user/export/route.ts:71-88`).
+- **Observed:** `HISTORY_RETENTION_DAYS/CHAT_RETENTION_DAYS` hide but do not delete; DB grows unbounded (mitigated partially by 2000/100 trims); privacy "retention" overstates deletion.
+- **Why:** Storage cost + GDPR-style deletion expectation gap.
+- **Fix:** execute documented TTL operator migration with backup + pre-checks; or scheduled purge job; update privacy copy to "hidden after N days, purged by operator job".
+- **Validate:** insert expired docs → after migration/purge they vanish; export excludes them.
+- **Effort:** M (operator) / S (docs fix).
+
+### REL-003 — Recommendations exclusion reads `w.tmdbId`/`f.tmdbId` but models store `itemId`
+
+- **Category:** Correctness. **Severity:** Medium. **Confidence:** Medium. **Status:** Probable. **Evidence:** Inferred (needs runtime confirmation).
+- **Location:** `app/api/ai-recommendations/route.ts:181-183` (`{title, type, id: w.tmdbId}`) vs `lib/models/FavoritesModel.ts:3-22` / `WatchlistModel` (`itemId`, no `tmdbId`).
+- **Observed:** `item.id` always undefined → `item.id === match.id` never true; title-similarity still filters, ID check dead. Docs mention legacy-doc fallback elsewhere (`app/api/movies/time-based/route.ts:41-49`) but recs route has none.
+- **Why:** Users may be recommended titles they own when title normalization misses (remakes, punctuation).
+- **Fix:** read `itemId` (with `tmdbId` fallback), include in `sortedItems`/hash.
+- **Validate:** seed favorite, mock Gemini echoing owned title + TMDB match → filtered out.
+- **Effort:** S.
+
+### PERF-002 — Two trending shards uncached; genres fans out ~20 upstream calls
+
+- **Category:** Performance. **Severity:** Low. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `app/api/trending/movie/route.ts:4`, `app/api/trending/tv/route.ts:4` (direct TMDB, no `getOrSet`); `app/api/genres/route.ts:11` fan-out.
+- **Observed:** Every page load hits origin for shards; genres mitigated by `tmdbProxyStrict` 10/min but still heavy per call.
+- **Why:** Avoidable origin load/latency; inconsistent with cached `/api/trending`.
+- **Fix:** wrap shards in `getOrSet` 300s like siblings; keep strict limit on genres.
+- **Validate:** double-GET test asserts single upstream fetch.
+- **Effort:** S.
+
+### SEC-004 — Optional-auth path skips JWT revocation check
+
+- **Category:** Security. **Severity:** Low. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `lib/security/auth.ts:160-192` (`tryRequireUser` no `RevokedSession` lookup) used by `app/api/movies/time-based/route.ts:88`.
+- **Observed:** Signed-out (revoked) token still gets personalized ordering on one public route; no data leak beyond reordered public catalog.
+- **Why:** Inconsistent revocation boundary.
+- **Fix:** add `RevokedSession.exists(jti)` to `tryRequireUser` (indexed, cheap) or document as accepted.
+- **Validate:** revoked-jti session → `tryRequireUser` null.
+- **Effort:** S.
+
+### QUAL-001 — 94 lint warnings: dead imports/vars, exhaustive-deps
+
+- **Category:** Maintainability. **Severity:** Low. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** e.g. `app/page.tsx:6-15`, `app/ai-assistant/page.tsx:5-345`, `lib/cache.ts:32`, `lib/env.ts:22`, `components/admin/*`; full list §22.
+- **Observed:** `eslint` 0 errors / 94 warnings (unused `ChatAssistant/TopRatedMovies/Play/...`, `cleanupMemoryCache` defined-never-used, `z` unused, missing deps in 3 `useEffect`).
+- **Why:** Noise hides real issues; dead code suggests incomplete cleanup (notably unused `cleanupMemoryCache` vs inline TTL checks).
+- **Fix:** remove dead imports/vars; wrap effect deps or memoize; either use or delete `cleanupMemoryCache`.
+- **Validate:** `npm run lint` 0/0.
+- **Effort:** S.
+
+### OPS-001 — No Dockerfile/Compose/IaC/CD/rollback or prod runbook in repo
+
+- **Category:** Operations. **Severity:** Info. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** absent (glob `{Dockerfile*,docker-compose*,vercel.json}` → none; only `.env`, `.env.local`, `.env.example`); CI has no deploy job (`.github/workflows/ci.yml:1-139`).
+- **Observed:** Deploy target, scaling, backup, rollback, secret-store steps live outside repo (or unwritten).
+- **Why:** New operator cannot reproduce prod; drift risk.
+- **Fix:** add minimal `Dockerfile` + healthcheck + deploy doc referencing probes/env/rollback; or explicitly document external platform + who owns it.
+- **Validate:** `docker build` + `/live`+`/ready` green.
+- **Effort:** M.
+
+### TEST-001 — No E2E, live-contract, or committed coverage evidence
+
+- **Category:** Testing. **Severity:** Info. **Confidence:** High. **Status:** Confirmed. **Evidence:** Verified.
+- **Location:** `tests/` 36 files (unit/contract/jsdom only); `vitest.config.mts:35-47` coverage scope but no artifact; no playwright/cypress config.
+- **Observed:** 349/349 pass, but critical UI→API→DB paths (checkout-free, but signin→favorite→export→delete) untested E2E; TMDB/Gemini shape drift caught only at runtime (Zod fallback, not contract test).
+- **Why:** Regression blind spot on upgrades (Next 15, Mongoose 8, Zod).
+- **Fix:** add 3 smoke E2E (public browse, auth list CRUD, AI disabled-fallback) + recorded TMDB/Gemini fixtures; publish coverage text in CI summary.
+- **Validate:** E2E green on PR; coverage trend visible.
+- **Effort:** M.
+
+## 20. Positive engineering observations
+
+- **AuthZ done right:** fresh-DB roles, revocation blocklist with TTL, fail-closed JWT/session, last-owner guards, disabled promote endpoint replaced by guarded CLI. Evidence: `lib/security/auth.ts:88-151`, `lib/auth.ts:58-129`, `scripts/promote-owner.js:38-60`.
+- **Input discipline:** strict `.strict()` Zod everywhere, ObjectId/tmdbId bounds, poster-path allowlist regex, unknown-field rejection. Evidence: `lib/security/schemas.ts:35-159`.
+- **Cache hygiene:** single namespace module, normalized keys, SCAN-only admin ops, no FLUSHDB/KEYS, stampede dedupe, bounded memory/LRU + inflight maps. Evidence: `lib/cache-namespace.ts:48-88`, `lib/cache.ts:313-359`, `lib/cacheManager.ts:160-208`.
+- **AI safety:** header-key transport, bounded prompts, fenced-JSON + Zod output validation, error-code mapping without upstream leakage, redacted logs, injection-resistant system prompts. Evidence: `lib/ai-security.ts:92-259`, `lib/gemini-payload.ts:52-80`.
+- **Privacy posture:** ownership-scoped queries, projection allowlists, generic filenames, consent-gated history, export caps, staged deletion with last-owner protection. Evidence: `lib/privacy-service.ts:37-140`, `app/api/history/route.ts:11-48`.
+- **Operational honesty:** boot classification (core-fatal vs redis-degraded), readiness degraded vs unavailable, features fail-closed 503, PII-safe structured logs, full-history gitleaks + audit in CI. Evidence: `instrumentation.ts:31-63`, `app/api/health/ready/route.ts:65-138`, `.github/workflows/ci.yml:91-110`.
+
+## 21. Risk register and prioritized remediation roadmap
+
+### Immediate (this week)
+
+- REL-001 quota-before-validation → validate-then-consume; owner: backend; S; valid: invalid POSTs don't move quota.
+- PERF-001 ai-similar pool-4 → copy recs batching; owner: backend; S; valid: max-inflight test.
+- REL-003 recs `itemId` fix → include in hash/exclusion; owner: backend; S; valid: owned-title filtered test.
+
+### Short term (next iteration)
+
+- DATA-001 retention purge/operator TTL + privacy-copy correction; owner: backend+ops; M; valid: expired rows gone.
+- REL-002 deferred Mongo throw; owner: backend; S; valid: import-safe + readiness 503.
+- QUAL-001 lint-zero (incl. `cleanupMemoryCache` decision); owner: frontend; S; valid: `npm run lint` clean.
+- PERF-002 cache trending shards; owner: backend; S; valid: single-fetch test.
+
+### Medium term (structural)
+
+- OPS-001 Dockerfile + deploy/rollback runbook + backup statement; owner: ops; M.
+- TEST-001 smoke E2E + fixture contracts + coverage summary; owner: QA/backend; M.
+- SEC-004 revocation in `tryRequireUser`; owner: backend; S.
+
+### Long term (strategic)
+
+- Per-instance memory-divergence review (sticky vs shared Redis requirement); multi-region story; real error-monitoring (Sentry/OpenTelemetry) wired to `operational-log` events; AI cost dashboards on `UsageQuota`; email-change-safe identity (ObjectId canonical) — each XL/S with unknowns documented.
+
+## 22. Validation and execution report
+
+### Executed and passed
+
+- `npm run typecheck` in repo root — exit 0, no output (clean). Proves strict TS passes.
+- `npm run lint` in repo root — exit 0, 0 errors / 94 warnings (dead imports, `exhaustive-deps` ×3, `no-img-element` ×1, unused `cleanupMemoryCache`/`z`/vars). Proves lint gate passes with hygiene debt (QUAL-001).
+- `npm test` (`vitest run`) in repo root — exit 0, **36 files / 349 tests passed**, ~192s (M4 timeout tests ~15s each by design). Proves unit/contract/UI suite green.
+
+### Executed and failed
+
+- None. No failing validation observed.
+
+### Not executed
+
+- `npm run build` — not executed (requires production env/secrets + ~minutes; CI already builds with placeholders; local build would need placeholder injection and was skipped to avoid state/time cost). Validate manually: set CI placeholder env from `.github/workflows/ci.yml:129-139`, run `npm run build`.
+- `npm run test:coverage` — not executed (redundant after full pass; v8 HTML output cost). Validate: `npm run test:coverage`.
+- `npm audit --audit-level=high` / gitleaks — not executed locally (CI-owned, network fetch for gitleaks). Validate via CI run.
+- `npm run setup-db` / `test-redis` / `promote-owner` — never run (destructive or needs live infra). Validate in sandbox only.
+- Live Mongo/Redis/TMDB/Gemini probes — not executed (no credentials, state-change risk).
+
+### Not applicable
+
+- DB migrations (none in repo), mobile/native channels, GraphQL/RPC/WS contracts, container scan (no image), license check (no LICENSE file — `Unknown:` distribution terms).
+
+Files created: `docs/PROJECT_BLUEPRINT.md`. Files modified: none. Files deleted: none. Commits/branches/deployments/external changes: none.
+
+## 23. Coverage and omissions ledger
+
+- **Deep:** `lib/env.ts`, `lib/auth.ts`, `lib/security/*`, `lib/cache*.ts`, `lib/redis*.ts`, `lib/tmdb.ts`, `lib/gemini-payload.ts`, `lib/ai-security.ts`, `lib/privacy-*.ts`, `lib/account-deletion.ts`, `middleware.ts`, `instrumentation.ts`, `next.config.mjs`, `app/api/chat|ai-recommendations|ai-similar|favorites|history|user*|admin/*|features|health/*|search|time-based|watchlist/details`, `app/layout|page|admin/layout`, CI, `.env.example`, all `lib/models/*`.
+- **Sampled:** remaining ~20 TMDB proxy routes (pattern-verified via grep + 5 full reads), `components/*` (top-level + admin listed, representative reads), `app/**/page.tsx` (19 listed, 3 read fully), `docs/*.md` claims (spot-checked), `scripts/*` (promote-owner full, others headers).
+- **Inventoried only:** `node_modules/`, `.next/`, `coverage/`, `components/ui/*` (43 shadcn files), media/genre images, lockfile (manager npm + frozen `npm ci` confirmed).
+- **Excluded:** `.env`/`.env.local` values (never read), `.git/` internals beyond branch/SHA/log, symlinks (none followed).
+- **Unresolved:** prod deploy target/owner, backup/RPO, real retention-purge date, LICENSE terms, Gemini model availability (`gemini-3.7-flash` string as-is). Confidence impact: ops/long-term items marked Info/Unknown, not blocking code findings.
+
+## 24. Glossary
+
+- **MovieMind:** product name in UI (`app/layout.tsx:45-47`); repo name `movie-recommendation-system`.
+- **TMDB:** The Movie Database v3 API, sole catalog source.
+- **Gemini `generateContent`:** Google AI REST used for chat/recs/similar; model string `GEMINI_MODEL`.
+- **R1–R8 / F-/W-/M- codes:** historical remediation batch IDs quoted in comments/tests (e.g. R6 retention, F-031 cache); not runtime concepts.
+- **`getOrSet`:** cache-aside with stampede dedupe (`lib/cache.ts:313-359`).
+- **Fail-closed:** deny/503 on uncertainty (features, auth, boot).
+- **Cardinality trim:** keep-newest-N deletion (`lib/security/cardinality.ts:20-51`).
+- **CACHE_SCOPES:** logical key partitions (`lib/cache-namespace.ts:27-34`).
+- **jti:** JWT ID for revocation (`lib/auth.ts:58-66`).
+
+## 25. Mental model for future developers and AI agents
+
+- **Starts:** `instrumentation.ts:19 register()` (prod boot gate) → `app/layout.tsx:26` shell → `app/page.tsx:36` home → `middleware.ts:8` UX gates → `app/api/**/route.ts` handlers.
+- **Business logic:** lives in route handlers + `lib/privacy-service.ts` + `lib/account-deletion.ts` (not in components); guards in `lib/security/*`; prompts in `lib/gemini-payload.ts`, output checks in `lib/ai-security.ts`.
+- **Data access:** only via `lib/models/*` + `connectToMongoDB()`; user scope always `userId = session email`; cache only via `redisCache` + `buildCacheKey(scope,resource)`.
+- **Interfaces:** defined by `app/api/**/route.ts` signatures + `lib/security/schemas.ts` Zod; AI shapes by `lib/ai-security.ts:134-164`.
+- **Config:** parsed once in `lib/env.ts:validateEnv/runtimeEnv`; Redis via `lib/redis-config.ts`; retention via `lib/privacy-retention.ts`; never import `lib/env.ts` client-side.
+- **Cross-cutting:** auth/origin/rate/quota/trim/retention/cache-namespace/operational-log.
+- **Tests:** `tests/*.test.ts(x)` mirror the above; run `npm test`, keep 349 green.
+- **Preserve:** fail-closed behavior, strict zod, namespace discipline, PII-safe logs, last-owner protection, quota/trim caps.
+- **Safe changes:** add cached public proxy (copy `search` pattern); add personal route (copy `favorites` pattern: requireUser→origin→zod→limit→scoped query).
+- **High-risk:** auth callbacks, `lib/mongodb.ts`, cache namespace version, quota/trim constants, retention TTL enablement, CSP/cookie changes — inspect tests first.
+
+## 26. New-developer reading order
+
+1. `package.json:1-14` — scripts + stack in 15 lines.
+2. `.env.example:1-53` + `lib/env.ts:52-77` — required config + secret rules.
+3. `middleware.ts:1-50` — UX gates + fail-closed features.
+4. `lib/auth.ts:40-130` — OAuth, JWT, fail-closed callbacks.
+5. `lib/security/auth.ts:88-151` — requireUser/Admin + origin gate.
+6. `lib/security/schemas.ts:35-76` — input shape discipline.
+7. `lib/models/User.ts:1-32` + `lib/models/History.ts:1-30` — identity + retention reality.
+8. `lib/cache-namespace.ts:1-34` + `lib/cache.ts:313-359` — namespace + stampede pattern.
+9. `app/api/favorites/route.ts:37-148` — canonical authed CRUD + cap/rollback.
+10. `app/api/chat/route.ts:132-200` + `lib/gemini-payload.ts:104-130` — AI trust boundary.
+11. `app/api/ai-recommendations/route.ts:136-230` — quota/cache/fallback orchestration.
+12. `lib/privacy-service.ts:17-60` + `app/api/user/account/route.ts:42-90` — export/delete.
+13. `app/api/health/ready/route.ts:65-138` + `instrumentation.ts:19-63` — ops signals.
+14. `.github/workflows/ci.yml:15-68` — gates to keep green.
+
+## 27. Open questions
+
+1. **Prod deploy target + owner?** Matters for OPS-001/scaling/backups. Checked: no Dockerfile/Compose/IaC/CD in repo; ADR claims unmanaged. Owner: ops. Verify: ask platform team / inspect hosting console.
+2. **Mongo topology (replica-set?) + backup/RPO?** Matters for txn use + DATA-001 purge safety. Checked: connection string only, no Atlas config. Owner: ops/DBA. Verify: `rs.status()` + backup policy doc.
+3. **Redis instance (shared? eviction?) + required?** Matters for rate/cache divergence. Checked: optional + calibrated queue 500. Owner: ops. Verify: Redis INFO + client count under load.
+4. **Gemini model `gemini-3.7-flash` availability + quota/billing?** Matters for AI reliability/cost. Checked: string default only. Owner: backend/finance. Verify: provider console + live smoke (non-prod key).
+5. **TMDB rate quota + key rotation?** Matters for proxy abuse budget. Checked: limits only. Owner: backend. Verify: TMDB dashboard.
+6. **Retention purge go-live + legal basis?** Matters for DATA-001. Checked: TTL commented as operator migration. Owner: legal/DPO + ops. Verify: retention decision record + backup before enable.
+7. **License/distribution terms (no LICENSE file)?** Matters for reuse. Checked: `package.json:101 ISC` but no file. Owner: legal. Verify: add/confirm license.

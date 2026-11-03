@@ -195,15 +195,15 @@ export function MoodBasedRecommendations() {
                   <button
                     type="button"
                     onClick={(e) => handleWatchlistToggle(movie, e)}
-                    aria-pressed={isInWatchlist(movie.id)}
-                    aria-label={isInWatchlist(movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`}
+                    aria-pressed={isInWatchlist('movie', movie.id)}
+                    aria-label={isInWatchlist('movie', movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`}
                     className="absolute top-2 right-2 p-2 rounded-full
                               bg-black/50 backdrop-blur-sm border border-gray-700/50
                               text-white hover:bg-black/70 hover:scale-110
                               transition-all duration-300 z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                   >
                     <Bookmark 
-                      className={`w-4 h-4 ${isInWatchlist(movie.id) ? 'fill-white' : ''}`} 
+                      className={`w-4 h-4 ${isInWatchlist('movie', movie.id) ? 'fill-white' : ''}`} 
                     />
                   </button>
 

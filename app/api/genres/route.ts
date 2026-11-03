@@ -10,8 +10,9 @@ const GENRES_TTL = 86400;
 
 export async function GET(request: NextRequest) {
   // Rate limit public TMDB proxy (M-03) — strict limit: this route fans out
-  // to ~20+ upstream discover calls per request
-  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxyStrict);
+  // to ~20+ upstream discover calls per request. AVAIL-001: dedicated
+  // per-route bucket so trailer traffic cannot exhaust the genres budget.
+  const rateLimitResponse = await applyRateLimitPublic(request, RATE_LIMITS.tmdbProxyGenres);
   if (rateLimitResponse) {
     return rateLimitResponse;
   }

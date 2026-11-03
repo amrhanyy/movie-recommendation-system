@@ -37,7 +37,7 @@ export default function LatestTrailers() {
       setIsLoading(true)
       setError(null)
       try {
-        const response = await fetch(`/api/trailers?filter=${selectedFilter.toLowerCase()}`)
+        const response = await fetch(`/api/trailers?filter=${encodeURIComponent(selectedFilter.toLowerCase())}`)
         if (!response.ok) throw new Error(`Failed to fetch trailers for ${selectedFilter}`)
         const data = await response.json()
         setTrailers(data.results)

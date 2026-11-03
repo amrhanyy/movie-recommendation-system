@@ -18,6 +18,7 @@ import {
   GEMINI_TIMEOUT_MS,
   getGeminiApiKey,
 } from '@/lib/gemini-payload';
+import { buildCacheKey, CACHE_SCOPES } from '@/lib/cache-namespace';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const BASE_URL = 'https://api.themoviedb.org/3';
@@ -31,6 +32,18 @@ interface MovieDetailItem {
     crew?: { job: string; name: string }[];
     cast?: { name: string }[];
   };
+}
+
+// W3-006c: bounded concurrency for TMDB enrichment (max 4 in-flight).
+// Inline copy of the established pool-4 pattern (ai-recommendations route):
+// items are sliced into fixed-size batches and each batch is awaited before
+// the next starts. No shared helper, no new abstraction — see PERF-001.
+const ENRICHMENT_POOL_SIZE = 4;
+
+interface AISuggestion {
+  title: string;
+  year?: string;
+  reasoning?: string;
 }
 
 async function getAISimilarMovies(movieDetails: MovieDetailItem) {
@@ -154,15 +167,28 @@ export async function GET(
       );
     }
 
-    // Cache key for AI similar movies
-    const cacheKey = `movie:${movieId}:ai-similar`;
-    
-    // Try to get from cache or generate with AI
-    let aiSuggestions = await redisCache.getOrSet(
+    // Route-local v2 scoped key (CACHE-FIX-2).  The payload shape changed from
+    // raw AI suggestions to the final enriched recommendation array, so the old
+    // `movie:<id>:ai-similar` v1 key is left untouched and expires naturally via
+    // TTL.  No dual-read, no migration.
+    const cacheKey = buildCacheKey(CACHE_SCOPES.aiSimilar, `${movieId}:v2`);
+
+    // Try to get the final enriched array from cache, or generate + enrich it.
+    // PERF-001b: the popular fallback AND the pool-4 enrichment run INSIDE the
+    // producer so a warm cache hit skips every upstream tier.  An empty final
+    // array returns undefined so it is never cached (retry on next request).
+    const cachedOrProducedRecommendations = await redisCache.getOrSet(
       cacheKey,
-      async () => {
+      async (): Promise<Array<{
+        id: number | null;
+        title: string;
+        release_date?: string;
+        poster_path?: string | null;
+        vote_average?: number;
+        reasoning?: string;
+      }> | undefined> => {
         console.log(`Cache miss - generating AI similar movies`);
-        
+
         // First, get the movie details to use for the prompt
         const detailsResponse = await fetch(
           `${BASE_URL}/movie/${movieId}?api_key=${TMDB_API_KEY}&append_to_response=credits`,
@@ -172,37 +198,39 @@ export async function GET(
         if (!detailsResponse.ok) {
           throw new Error(`Movie details fetch failed: ${detailsResponse.status}`);
         }
-        
+
         const movieDetails = await detailsResponse.json();
-        
+
+        let aiSuggestions: AISuggestion[];
+
         try {
           // Generate AI recommendations
           const aiResults = await getAISimilarMovies(movieDetails);
-          
+
           // If AI returned empty results or very few, throw an error so we use TMDB fallback
           if (!aiResults || aiResults.length < 4) {
             throw new Error('Insufficient AI results, falling back to TMDB');
           }
-          
-          return aiResults;
+
+          aiSuggestions = aiResults;
         } catch {
           console.error('AI similar fallback to TMDB');
-          
+
           // Fallback to TMDB similar movies
           try {
             const similarResponse = await fetch(
               `${BASE_URL}/movie/${movieId}/similar?api_key=${TMDB_API_KEY}`,
               { next: { revalidate: 3600 } }
             );
-            
+
             if (!similarResponse.ok) {
               throw new Error(`TMDB similar failed: ${similarResponse.status}`);
             }
-            
+
             const similarData = await similarResponse.json();
-            
+
             // Format TMDB results to match our expected format
-            return similarData.results.slice(0, 12).map((movie: {
+            aiSuggestions = similarData.results.slice(0, 12).map((movie: {
               title: string;
               release_date?: string;
             }) => ({
@@ -212,100 +240,118 @@ export async function GET(
             }));
           } catch {
             console.error('TMDB similar fallback failed');
-            return []; // Return empty if all methods fail
+            aiSuggestions = []; // Return empty if all methods fail
           }
         }
+
+        // Ensure we have at least some results
+        if (!aiSuggestions || aiSuggestions.length === 0) {
+          console.log('No AI or TMDB suggestions available, using emergency fallback');
+
+          // Emergency fallback - try to get popular movies if everything else fails
+          try {
+            const popularResponse = await fetch(
+              `${BASE_URL}/movie/popular?api_key=${TMDB_API_KEY}`,
+              { next: { revalidate: 3600 } }
+            );
+
+            if (popularResponse.ok) {
+              const popularData = await popularResponse.json();
+
+              // Format popular movies as fallback
+              aiSuggestions = popularData.results.slice(0, 12).map((movie: {
+                title: string;
+                release_date?: string;
+              }) => ({
+                title: movie.title,
+                year: movie.release_date?.slice(0, 4) || '',
+                reasoning: 'Popular movie you might enjoy'
+              }));
+            }
+          } catch {
+            console.error('Emergency fallback failed');
+          }
+        }
+
+        // Now fetch TMDB details for these movie recommendations
+        const enhancedRecommendations: Array<{
+          id: number | null;
+          title: string;
+          release_date?: string;
+          poster_path?: string | null;
+          vote_average?: number;
+          reasoning?: string;
+        }> = [];
+
+        for (let i = 0; i < aiSuggestions.length; i += ENRICHMENT_POOL_SIZE) {
+          const batch = aiSuggestions.slice(i, i + ENRICHMENT_POOL_SIZE);
+          const batchResults = await Promise.all(
+            batch.map(async (movie: AISuggestion) => {
+              try {
+                // Search for the movie in TMDB
+                const searchResponse = await fetch(
+                  `${BASE_URL}/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(movie.title)}&year=${encodeURIComponent(movie.year || '')}`,
+                  { next: { revalidate: 3600 } }
+                );
+
+                if (!searchResponse.ok) {
+                  return {
+                    ...movie,
+                    poster_path: null,
+                    id: null,
+                    vote_average: 0
+                  };
+                }
+
+                const searchData = await searchResponse.json();
+                const bestMatch = searchData.results[0];
+
+                if (bestMatch) {
+                  return {
+                    id: bestMatch.id,
+                    title: bestMatch.title,
+                    release_date: bestMatch.release_date,
+                    poster_path: bestMatch.poster_path,
+                    vote_average: bestMatch.vote_average,
+                    reasoning: movie.reasoning
+                  };
+                }
+
+                return {
+                  ...movie,
+                  poster_path: null,
+                  id: null,
+                  vote_average: 0
+                };
+              } catch {
+                console.error('TMDB search failed');
+                return {
+                  ...movie,
+                  poster_path: null,
+                  id: null,
+                  vote_average: 0
+                };
+              }
+            })
+          );
+          enhancedRecommendations.push(...batchResults);
+        }
+
+        // Final enrichment: keep only items we resolved to a real TMDB id.
+        // Non-empty partial results are cached (intentional trade-off); an empty
+        // final array returns undefined so getOrSet skips the cache write.
+        const validRecommendations = enhancedRecommendations.filter(
+          (movie: { id: number | null }) => movie.id !== null
+        );
+
+        return validRecommendations.length > 0 ? validRecommendations : undefined;
       },
       // Cache for 24 hours (86400 seconds)
       86400
     );
-    
-    // Ensure we have at least some results
-    if (!aiSuggestions || aiSuggestions.length === 0) {
-      console.log('No AI or TMDB suggestions available, using emergency fallback');
-      
-      // Emergency fallback - try to get popular movies if everything else fails
-      try {
-        const popularResponse = await fetch(
-          `${BASE_URL}/movie/popular?api_key=${TMDB_API_KEY}`,
-          { next: { revalidate: 3600 } }
-        );
-        
-        if (popularResponse.ok) {
-          const popularData = await popularResponse.json();
-          
-          // Format popular movies as fallback
-          aiSuggestions = popularData.results.slice(0, 12).map((movie: {
-            title: string;
-            release_date?: string;
-          }) => ({
-            title: movie.title,
-            year: movie.release_date?.slice(0, 4) || '',
-            reasoning: 'Popular movie you might enjoy'
-          }));
-        }
-      } catch {
-        console.error('Emergency fallback failed');
-      }
-    }
-    
-    // Now fetch TMDB details for these movie recommendations
-    const enhancedRecommendations = await Promise.all(
-      aiSuggestions.map(async (movie: {
-        title: string;
-        year?: string;
-        reasoning?: string;
-      }) => {
-        try {
-          // Search for the movie in TMDB
-          const searchResponse = await fetch(
-            `${BASE_URL}/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(movie.title)}&year=${movie.year || ''}`,
-            { next: { revalidate: 3600 } }
-          );
-          
-          if (!searchResponse.ok) {
-            return {
-              ...movie,
-              poster_path: null,
-              id: null,
-              vote_average: 0
-            };
-          }
-          
-          const searchData = await searchResponse.json();
-          const bestMatch = searchData.results[0];
-          
-          if (bestMatch) {
-            return {
-              id: bestMatch.id,
-              title: bestMatch.title,
-              release_date: bestMatch.release_date,
-              poster_path: bestMatch.poster_path,
-              vote_average: bestMatch.vote_average,
-              reasoning: movie.reasoning
-            };
-          }
-          
-          return {
-            ...movie,
-            poster_path: null,
-            id: null,
-            vote_average: 0
-          };
-        } catch {
-          console.error('TMDB search failed');
-          return {
-            ...movie,
-            poster_path: null,
-            id: null,
-            vote_average: 0
-          };
-        }
-      })
-    );
-    
-    const validRecommendations = enhancedRecommendations.filter((movie: { id: number | null }) => movie.id !== null);
-    
+
+    const validRecommendations = cachedOrProducedRecommendations ?? [];
+
     return NextResponse.json({ results: validRecommendations });
   } catch {
     console.error('AI similar movies request failed');

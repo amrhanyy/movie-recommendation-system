@@ -19,10 +19,15 @@ let redisOfflineLogged = false;
 const REDIS_ERROR_LOG_INTERVAL = 60000; // Only log Redis errors once per minute
 let lastRedisErrorTime = 0;
 
+interface InFlightEntry<T> {
+  promise: Promise<T>;
+  invalidated: boolean;
+}
+
 // Stampede protection: in-flight promise de-duplication (F-055).
 // Map keys are the fully namespaced cache keys, so different resources do not
 // block each other and dedup is scoped per key.
-const inflightPromises: Map<string, Promise<unknown>> = new Map();
+const inflightEntries: Map<string, InFlightEntry<unknown>> = new Map();
 const MAX_INFLIGHT_ENTRIES = 1000;
 
 // Cleanup expired memory entries periodically
@@ -208,6 +213,18 @@ export class RedisCache {
     // Always remove from memory cache
     memoryCache.delete(namespacedKey);
 
+    // Invalidate in-flight entry if present
+    const entry = inflightEntries.get(namespacedKey);
+    if (entry) {
+      entry.invalidated = true;
+      // Remove from the in-flight registry as well: the entry is dead and
+      // must not block a later getOrSet from starting a fresh producer, nor
+      // grow the map without bound. The pending producer's .then write gate
+      // already prevents the stale write, and its finally is a no-op because
+      // the entry is no longer in the map.
+      inflightEntries.delete(namespacedKey);
+    }
+
     // Try to delete from Redis
     await this.safeRedisOp(async (redis) => {
       return redis.del(namespacedKey);
@@ -256,18 +273,41 @@ export class RedisCache {
     match: string,
     maxDelete: number = MAX_DELETE_KEYS_PER_REQUEST
   ): Promise<CacheClearResult> {
-    // Always clear matching memory-cache entries first (prefix-scoped)
-    const clearedMemory = this.clearMemoryPrefix(match);
+    // Namespace the match pattern without normalizing wildcard characters
+    const namespacedMatch = applyNamespace(match);
+    // Determine pattern prefix for matching
+    const pattern = namespacedMatch.endsWith('*') ? namespacedMatch : `${namespacedMatch}*`;
+    const prefix = pattern.replace('*', '');
 
+    // First, invalidate matching in-flight entries by directly scanning the map
+    // We collect keys to delete to avoid modifying map during iteration
+    const forDeletion: string[] = [];
+    for (const [key, entry] of inflightEntries.entries()) {
+      // Use boundary-safe prefix matching to avoid partial key name confusion
+      // A key matches if it starts with the prefix AND either:
+      // - the key exactly equals the prefix, OR
+      // - the prefix itself ends with ':' (meaning it's a scope prefix), OR
+      // - the character immediately after the prefix is a ':' (segment separator)
+      if (key.startsWith(prefix) && (key.length === prefix.length || prefix.endsWith(':') || key[prefix.length] === ':')) {
+        entry.invalidated = true;
+        forDeletion.push(key);
+      }
+    }
+    for (const key of forDeletion) {
+      inflightEntries.delete(key);
+    }
+
+    // Clear memory cache with the pattern
+    const clearedMemory = this.clearMemoryPrefix(namespacedMatch);
+
+    // Scan and delete from Redis
     const redisResult = await this.safeRedisOp<CacheClearResult>(async (redis) => {
-      const keys = await this.scanNamespacedKeys(redis, match, maxDelete);
-      const totalFound = keys.length;
-
-      if (totalFound === 0) {
+      // For Redis, we need to scan properly
+      const keys = await this.scanNamespacedKeys(redis, pattern, maxDelete);
+      if (keys.length === 0) {
         return { deleted: 0, remaining: false, complete: true, degraded: false };
       }
 
-      // Delete in bounded batches
       let deleted = 0;
       for (let i = 0; i < keys.length; i += SCAN_BATCH_SIZE) {
         const batch = keys.slice(i, i + SCAN_BATCH_SIZE);
@@ -277,8 +317,8 @@ export class RedisCache {
 
       return {
         deleted,
-        remaining: totalFound >= maxDelete,
-        complete: totalFound < maxDelete,
+        remaining: keys.length >= maxDelete,
+        complete: keys.length < maxDelete,
         degraded: false,
       };
     });
@@ -298,7 +338,12 @@ export class RedisCache {
     let deleted = 0;
     const prefix = filter.endsWith('*') ? filter.slice(0, -1) : filter;
     for (const key of Array.from(memoryCache.keys())) {
-      if (key.startsWith(prefix)) {
+      // Use boundary-safe prefix matching to avoid partial key name confusion
+      // A key matches if it starts with the prefix AND either:
+      // - the key exactly equals the prefix, OR
+      // - the prefix itself ends with ':' (meaning it's a scope prefix), OR
+      // - the character immediately after the prefix is a ':' (segment separator)
+      if (key.startsWith(prefix) && (key.length === prefix.length || prefix.endsWith(':') || key[prefix.length] === ':')) {
         memoryCache.delete(key);
         deleted++;
       }
@@ -317,45 +362,98 @@ export class RedisCache {
   ): Promise<T> {
     const namespacedKey = this.ns(key);
 
+    // In-flight entry check (synchronous) so a concurrent caller joins the
+    // already-registered flight instead of starting a duplicate producer.
+    const existingEntry = inflightEntries.get(namespacedKey);
+    if (existingEntry) {
+      return existingEntry.promise as Promise<T>;
+    }
+
+    // Build a real Promise before the entry becomes visible, then register
+    // the complete entry SYNCHRONOUSLY (before the async cache check), so
+    // that an invalidation arriving during the await (delete / clear / capacity
+    // eviction) is observed on this entry instead of being lost. fetchFn()
+    // starts only after registration (deferred by a microtask).
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const entryPromise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+
+    const entry: InFlightEntry<T> = {
+      promise: entryPromise,
+      invalidated: false,
+    };
+
+    // Register entry BEFORE the async cache check so invalidations that arrive
+    // during the await land on this entry.
+    inflightEntries.set(namespacedKey, entry);
+
+    // Bound the in-flight map (capacity invalidation before registry eviction).
+    if (inflightEntries.size >= MAX_INFLIGHT_ENTRIES) {
+      const oldestKey = inflightEntries.keys().next().value;
+      if (oldestKey) {
+        const oldestEntry = inflightEntries.get(oldestKey);
+        if (oldestEntry) {
+          oldestEntry.invalidated = true;
+          inflightEntries.delete(oldestKey);
+        }
+      }
+    }
+
+    // Try cache (async). An invalidation during this await sets
+    // entry.invalidated and may remove the entry from the registry, but we
+    // still resolve correctly below.
     let cachedValue: T | null = null;
     try {
       cachedValue = await this.get<T>(namespacedKey);
       if (cachedValue !== null) {
-        return cachedValue;
+        const ce = inflightEntries.get(namespacedKey);
+        if (ce === entry) {
+          inflightEntries.delete(namespacedKey);
+        }
+        resolve(cachedValue);
+        return entryPromise;
       }
     } catch (error) {
       // Errors are already handled in the get method
     }
 
-    // In-flight de-duplication: same key => same origin promise
-    const existing = inflightPromises.get(namespacedKey);
-    if (existing) {
-      return existing as Promise<T>;
-    }
+    // Deferred producer start: the entry is visible with a valid promise
+    // before fetchFn() executes.
+    //
+    // The producer MUST always run and settle the original promise, even if
+    // the entry was invalidated / removed / evicted / superseded before this
+    // microtask fired. Invalidation suppresses cache writes (entry.invalidated)
+    // and a removed or superseded entry never writes (registry identity check),
+    // but it must NOT leave the original caller's promise pending forever.
+    queueMicrotask(() => {
+      Promise.resolve()
+        .then(() => fetchFn())
+        .then((freshData: T) => {
+          const ce = inflightEntries.get(namespacedKey);
+          // Write only when not invalidated AND the registry still points to
+          // this entry (i.e. not removed or superseded by a newer flight).
+          if (!entry.invalidated && ce === entry && freshData !== undefined) {
+            this.set(namespacedKey, freshData, expireInSeconds).catch(() => {
+              // Cache write failures must not change caller-visible semantics
+            });
+          }
+          resolve(freshData);
+        })
+        .catch((err: unknown) => {
+          reject(err);
+        })
+        .finally(() => {
+          const ce = inflightEntries.get(namespacedKey);
+          if (ce === entry) {
+            inflightEntries.delete(namespacedKey);
+          }
+        });
+    });
 
-    const origin = fetchFn()
-      .then((freshData) => {
-        if (freshData !== undefined) {
-          this.set(namespacedKey, freshData, expireInSeconds).catch(() => {
-            // Cache write failures must not change caller-visible semantics
-          });
-        }
-        return freshData;
-      })
-      .finally(() => {
-        // Always release after resolve OR reject so retries are possible
-        inflightPromises.delete(namespacedKey);
-      });
-
-    // Bound the in-flight map to avoid unbounded growth
-    if (inflightPromises.size >= MAX_INFLIGHT_ENTRIES) {
-      const oldest = inflightPromises.keys().next().value;
-      if (oldest !== undefined) {
-        inflightPromises.delete(oldest);
-      }
-    }
-    inflightPromises.set(namespacedKey, origin);
-    return origin;
+    return entryPromise;
   }
 }
 

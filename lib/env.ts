@@ -11,9 +11,9 @@
  * - Redis stays optional (memory fallback exists) and reuses lib/redis-config.ts
  *   so parsing is never duplicated or contradictory.
  * - This file is server-only by convention and is never imported into client
- *   components. (`import "server-only"` is intentionally NOT added: the package
- *   is not installed. Next.js guards client imports of server secrets; the R6
- *   keyboard module already keeps secrets server-side.)
+ *   components. Server-only enforcement is by convention (no new dependency):
+ *   no file under app/, components/, contexts/, or hooks/ imports it
+ *   (verified by grep; see the M7 report).
  *
  * Usage: routes and modules call `runtimeEnv` (a lazily validated singleton)
  * or describeEnv(process.env) for test-only dependency injection.

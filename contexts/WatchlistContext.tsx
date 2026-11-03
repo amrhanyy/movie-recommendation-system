@@ -12,6 +12,7 @@ import React, {
 } from 'react'
 import { useSession, signIn } from 'next-auth/react'
 import { toast } from 'react-hot-toast'
+import { listMembershipKey, isListMediaType, isValidListItemId, type ListMembershipKey } from '@/lib/list-membership'
 
 export interface WatchlistToggleItem {
   itemId: number
@@ -21,10 +22,14 @@ export interface WatchlistToggleItem {
 }
 
 interface WatchlistContextValue {
-  /** Set of every watchlist item id (across movies and TV). */
-  watchlistIds: Set<number>
-  /** O(1) membership check for a single id. */
-  isInWatchlist: (id: number) => boolean
+  /**
+   * Set of every watchlist membership key, type-qualified (`movie:<id>` /
+   * `tv:<id>`) so a movie and a TV show sharing one numeric TMDB id are
+   * distinct members. Matches the API/persistence identity `(userId, itemId, type)`.
+   */
+  watchlistIds: Set<ListMembershipKey>
+  /** O(1) membership check for a single media type + id. */
+  isInWatchlist: (type: 'movie' | 'tv', id: number) => boolean
   /**
    * Optimistically add/remove an item. Updates UI immediately, reverts and
    * toasts on failure. Prompts sign-in for guests.
@@ -38,7 +43,7 @@ const WatchlistContext = createContext<WatchlistContextValue | null>(null)
 
 export function WatchlistProvider({ children }: { children: ReactNode }) {
   const { data: session } = useSession()
-  const [watchlistIds, setWatchlistIds] = useState<Set<number>>(new Set())
+  const [watchlistIds, setWatchlistIds] = useState<Set<ListMembershipKey>>(new Set())
   const [isLoading, setIsLoading] = useState(true)
 
   // Fetch the watchlist once per authenticated session (single source of truth
@@ -58,12 +63,18 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
           setWatchlistIds(new Set())
           return
         }
-        const data: { itemId: number }[] = await response.json()
+        const data: { itemId?: unknown; type?: unknown }[] = await response.json()
         if (cancelled) return
+        // Membership identity is the type-qualified pair, not the bare id:
+        // invalid records (bad/missing type, non-finite or non-positive itemId)
+        // are skipped rather than given an invented type.
         const ids = new Set(
           data
-            .filter((item) => typeof item.itemId === 'number')
-            .map((item) => Number(item.itemId))
+            .filter(
+              (item): item is { itemId: number; type: 'movie' | 'tv' } =>
+                isListMediaType(item.type) && isValidListItemId(item.itemId)
+            )
+            .map((item) => listMembershipKey(item.type, item.itemId))
         )
         setWatchlistIds(ids)
       } catch (error) {
@@ -82,7 +93,7 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
   }, [session?.user?.email])
 
   const isInWatchlist = useCallback(
-    (id: number) => watchlistIds.has(id),
+    (type: 'movie' | 'tv', id: number) => watchlistIds.has(listMembershipKey(type, id)),
     [watchlistIds]
   )
 
@@ -99,13 +110,14 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      const alreadyIn = watchlistIdsRef.current.has(item.itemId)
+      const membershipKey = listMembershipKey(item.type, item.itemId)
+      const alreadyIn = watchlistIdsRef.current.has(membershipKey)
 
       // Optimistic update.
       setWatchlistIds((prev) => {
         const next = new Set(prev)
-        if (alreadyIn) next.delete(item.itemId)
-        else next.add(item.itemId)
+        if (alreadyIn) next.delete(membershipKey)
+        else next.add(membershipKey)
         return next
       })
 
@@ -128,11 +140,11 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error('Error toggling watchlist:', error)
-        // Roll back the optimistic change.
+        // Roll back the optimistic change (targeted key only).
         setWatchlistIds((prev) => {
           const next = new Set(prev)
-          if (alreadyIn) next.add(item.itemId)
-          else next.delete(item.itemId)
+          if (alreadyIn) next.add(membershipKey)
+          else next.delete(membershipKey)
           return next
         })
         toast.error('Failed to update watchlist')

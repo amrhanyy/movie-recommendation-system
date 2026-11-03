@@ -13,7 +13,7 @@ interface FavoriteButtonProps {
 
 export function FavoriteButton({ itemId, type, title, posterPath }: FavoriteButtonProps) {
   const { isFavorite, isLoading, toggleFavorite } = useFavoritesContext();
-  const active = isFavorite(itemId);
+  const active = isFavorite(type, itemId);
 
   return (
     <button

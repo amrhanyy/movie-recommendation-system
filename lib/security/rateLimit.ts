@@ -299,8 +299,11 @@ export const RATE_LIMITS = {
   tmdbProxy: { maxRequests: 60, windowMs: 60_000, prefix: "tmdb" }, // 60/min
 
   // Expensive TMDB proxy routes with heavy upstream fan-out (M-03):
-  // /api/genres (~20+ discover calls), /api/trailers (1 + up to 10 calls)
-  tmdbProxyStrict: { maxRequests: 10, windowMs: 60_000, prefix: "tmdb-strict" }, // 10/min
+  // /api/genres (~20+ discover calls), /api/trailers (1 + up to 10 calls).
+  // AVAIL-001: independent per-route buckets (10/min each, as before) so
+  // exhausting one heavy route can no longer starve the other's budget.
+  tmdbProxyGenres: { maxRequests: 10, windowMs: 60_000, prefix: "tmdb-genres" }, // 10/min
+  tmdbProxyTrailers: { maxRequests: 10, windowMs: 60_000, prefix: "tmdb-trailers" }, // 10/min
 
   // Per-user list writes (M-05): favorites / watchlist POST
   listWrite: { maxRequests: 20, windowMs: 60_000, prefix: "list-write" }, // 20/min

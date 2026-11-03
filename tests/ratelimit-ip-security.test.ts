@@ -180,11 +180,55 @@ describe('M-01: X-Forwarded-For rate-limit spoofing', () => {
     expect(denied).toBe(true);
   });
 
+  it('keeps genres and trailers on independent strict budgets', async () => {
+    const { applyRateLimitPublic, RATE_LIMITS } = await import(
+      '@/lib/security/rateLimit'
+    );
+    const apply = applyRateLimitPublic;
+    const genresRequest = reqWith({ 'x-forwarded-for': '192.0.2.10' });
+    const trailersRequest = reqWith({ 'x-forwarded-for': '192.0.2.11' });
+
+    expect(RATE_LIMITS.tmdbProxyGenres.maxRequests).toBe(10);
+    expect(RATE_LIMITS.tmdbProxyGenres.windowMs).toBe(60_000);
+    expect(RATE_LIMITS.tmdbProxyTrailers.maxRequests).toBe(10);
+    expect(RATE_LIMITS.tmdbProxyTrailers.windowMs).toBe(60_000);
+    expect(RATE_LIMITS.tmdbProxyGenres.prefix).not.toBe(
+      RATE_LIMITS.tmdbProxyTrailers.prefix
+    );
+
+    for (let i = 0; i < RATE_LIMITS.tmdbProxyGenres.maxRequests; i++) {
+      expect(await apply(genresRequest, RATE_LIMITS.tmdbProxyGenres)).toBeNull();
+    }
+    const genresDenied = await apply(genresRequest, RATE_LIMITS.tmdbProxyGenres);
+    expect(genresDenied).not.toBeNull();
+    expect(genresDenied?.headers.get('Retry-After')).toBeTruthy();
+    expect(
+      await apply(trailersRequest, RATE_LIMITS.tmdbProxyTrailers)
+    ).toBeNull();
+  });
+
+  it('keeps trailers from exhausting the genres budget', async () => {
+    const { applyRateLimitPublic, RATE_LIMITS } = await import(
+      '@/lib/security/rateLimit'
+    );
+    const apply = applyRateLimitPublic;
+    const genresRequest = reqWith({ 'x-forwarded-for': '192.0.2.12' });
+    const trailersRequest = reqWith({ 'x-forwarded-for': '192.0.2.13' });
+
+    for (let i = 0; i < RATE_LIMITS.tmdbProxyTrailers.maxRequests; i++) {
+      expect(await apply(trailersRequest, RATE_LIMITS.tmdbProxyTrailers)).toBeNull();
+    }
+    expect(
+      await apply(trailersRequest, RATE_LIMITS.tmdbProxyTrailers)
+    ).not.toBeNull();
+    expect(await apply(genresRequest, RATE_LIMITS.tmdbProxyGenres)).toBeNull();
+  });
+
   it('exposes the tmdbProxy config (M-03 uses it)', () => {
     expect(RATE_LIMITS.tmdbProxy).toBeDefined();
-    expect(RATE_LIMITS.tmdbProxyStrict).toBeDefined();
-    // /genres + /trailers are the expensive fan-out routes: stricter.
-    expect(RATE_LIMITS.tmdbProxyStrict.maxRequests).toBeLessThan(
+    expect(RATE_LIMITS.tmdbProxyGenres).toBeDefined();
+    expect(RATE_LIMITS.tmdbProxyTrailers).toBeDefined();
+    expect(RATE_LIMITS.tmdbProxyGenres.maxRequests).toBeLessThan(
       RATE_LIMITS.tmdbProxy.maxRequests
     );
   });
