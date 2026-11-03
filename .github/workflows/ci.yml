@@ -89,13 +89,19 @@ jobs:
       # and are only provided to satisfy build-time validation if required. They
       # do not imitate real secrets and are never used against live services.
       - name: Dependency audit (documented policy)
-        # Raw audit reference (not executed here): `npm audit --audit-level=high --omit=dev`
-        # remains the repository's documented audit command. Phase 14 (BRACES-EXC)
-        # routes it through scripts/audit-policy.mjs, a fail-closed evaluator that
-        # accepts only the exact unpatched braces advisory until 2026-10-17T23:59:59Z.
-        # The raw command above is deliberately not run: it exits 1 because the
-        # vulnerability is real and unpatched. The policy gate exits 0 only because
-        # the exact, time-limited, human-reviewed exception is applied.
+        # Documented raw audit commands (not executed here):
+        # `npm audit --audit-level=high --omit=dev`
+        # `npm audit --production` and `npm audit` (bare, full tree).
+        # Phase 16B (DEP-AUDIT-005) routes both through scripts/audit-policy.mjs,
+        # a fail-closed evaluator with a scope-aware exception policy:
+        # - the production audit must be clean (zero vulnerabilities),
+        # - the bare audit carries exactly one time-limited, dev-only Minimatch
+        #   advisory exception defined in config/audit-exceptions.json,
+        # - the exception expires on 2026-11-16T23:59:59Z,
+        # - the gate fails closed after expiry or on any advisory metadata drift
+        #   (advisory identity, severity, scope, or inventory changes).
+        # The policy gate exits 0 only while that exact, time-limited,
+        # human-reviewed exception applies; otherwise it exits nonzero.
         run: node scripts/audit-policy.mjs
 
       - name: Secret scan (gitleaks)

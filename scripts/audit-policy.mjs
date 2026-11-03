@@ -1,567 +1,71 @@
+#!/usr/bin/env node
 /**
- * Audit-policy evaluator for the approved, narrowly scoped, time-limited
- * exception to the currently unpatched `braces` advisory.
+ * Phase 16B audit policy gate (DEP-AUDIT-005).
  *
- * Phase 14 — DEP-AUDIT-003 / BUG-BRACES-UNPATCHED-STACK-EXHAUSTION
+ * Policy: PRODUCTION CLEAN + ONE DEV-ONLY TEMPORARY EXCEPTION.
  *
- * Two layers:
- *   - Layer A: `evaluateAuditPolicy` — a pure, deterministic function. No process
- *     execution, no filesystem, no network, no environment reads. Unit tests call
- *     this directly (with an injected `now`).
- *   - Layer B: the CLI wrapper, which runs `npm audit --omit=dev --json` and
- *     `npm audit --json`, feeds each result to Layer A, and exits
- *     0 (both scopes accepted), 1 (policy rejection), or 2 (configuration or
- *     internal error).
+ * - The production scope must be completely clean. A clean production audit is
+ *   accepted as CLEAN_AUDIT without ever consulting the exception. A bare
+ *   exception can never accept production findings (scope gate).
+ * - The bare scope may accept exactly the approved dev-only exception record.
+ *   Any other advisory, package, version, scope, or vulnerable inventory
+ *   rejects fail-closed.
  *
- * Fail-closed by construction: the only audit state this script ever converts
- * into a zero exit is (a) a genuinely clean audit, or (b) an audit whose
- * vulnerabilities are exactly the single approved advisory, propagating to
- * exactly the approved package inventory, under an unexpired exception.
- * Everything else — extra packages, missing packages, a second advisory,
- * changed severity/CVSS/source/URL, changed installed version, malformed JSON,
- * empty output, an unexpected npm exit code, a registry/network failure, an
- * expired or invalid exception — rejects.
+ * Evaluator (pure):
+ *   - scope-aware evaluation (J1)
+ *   - severity parameterized by the exception's recorded severity (J2)
+ *   - nullable CVSS vector, exact match, never a wildcard (J3)
+ *   - exact npm-feed CVSS score comparison (J4)
+ *   - clean-audit path without an exception (J5)
+ *   - fail-closed on every mutation listed in J6
+ *   - multi-copy version resolution keyed by the exact install node path
+ *     the audit flagged (F2), so a hoisted vulnerable copy is never confused
+ *     with a patched nested copy of the same package name.
+ *
+ * CLI infrastructure (K):
+ *   - resolveNpmPath accepts NPM_PATH values containing spaces, never uses
+ *     shell interpolation (spawn argument array, no shell), validates that
+ *     the candidate is an existing file, and falls back in the fixed order:
+ *     validated NPM_PATH -> validated npm_execpath -> npm adjacent to
+ *     process.execPath -> common direct prefix candidates -> bounded
+ *     breadth-first filesystem search. No local-machine hard-coded path.
+ *   - Infrastructure failures (npm cannot run, no output, unexpected exit
+ *     code, registry error body) exit with EXIT_CONFIG_OR_INTERNAL = 2.
+ *   - Policy rejection exits with 1. Success exits with 0.
  */
 
 import { spawn } from 'node:child_process';
-import { readdirSync as fsReaddirSync, readFileSync, realpathSync as fsRealpathSync, statSync } from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const EXIT_POLICY_REJECT = 1;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..');
+
+const NPM_AUDIT_TIMEOUT_MS = 180000;
+const NPM_STDOUT_LIMIT_BYTES = 10 * 1024 * 1024;
+const NPM_CLI_FILENAME = 'npm-cli.js';
+const NPM_CLI_RELATIVE = path.join('node_modules', 'npm', 'bin', NPM_CLI_FILENAME);
+export const NPM_SEARCH_VISIT_CAP = 1000;
+
+export const SCOPES = Object.freeze(['production', 'bare']);
+const NPM_AUDIT_ARGS = Object.freeze({
+  production: ['audit', '--omit=dev', '--json'],
+  bare: ['audit', '--json'],
+});
+
+const EXIT_SUCCESS = 0;
+const EXIT_POLICY_REJECTED = 1;
 const EXIT_CONFIG_OR_INTERNAL = 2;
 
-/**
- * @typedef {Object} AuditPolicyObserved
- * @property {'production'|'bare'} scope
- * @property {number|null} npmExitCode
- * @property {number|null} totalVulnerabilities
- * @property {string[]} vulnerabilityPackages
- * @property {object[]} advisoryObjects
- * @property {string|null} installedBracesVersion
- * @property {string|null} exceptionId
- * @property {string|null} exceptionExpiryDate
- * @property {boolean|null} expired
- */
+const SEVERITY_LEVELS = Object.freeze(['info', 'low', 'moderate', 'high', 'critical']);
+const SCOPE_VALUES = Object.freeze(['production', 'bare']);
 
-/**
- * @typedef {Object} AuditPolicyResult
- * @property {boolean} accepted
- * @property {string} reasonCode
- * @property {string} summary
- * @property {AuditPolicyObserved} observed
- */
-
-/**
- * Layer A — pure policy evaluator.
- *
- * @param {Object} input
- * @param {Record<string, unknown>|string} input.auditJson parsed or raw npm audit JSON
- * @param {number} input.npmExitCode the npm process exit code
- * @param {'production'|'bare'} input.scope which audit view is being evaluated
- * @param {object} input.exception the approved exception record
- * @param {string|number|Date} input.now the injected current time
- * @param {object|null} [input.installedVersions] resolved package versions
- * @returns {AuditPolicyResult} a structured accept/reject result
- */
-export function evaluateAuditPolicy({ auditJson, npmExitCode, scope, exception, now, installedVersions }) {
-  const observed = {
-    scope,
-    npmExitCode,
-    totalVulnerabilities: null,
-    vulnerabilityPackages: [],
-    advisoryObjects: [],
-    installedBracesVersion: null,
-    exceptionId: null,
-    exceptionExpiryDate: null,
-    expired: null,
-  };
-
-  // --- 0. Exception schema validation (a malformed exception is a hard reject). ---
-  const schemaError = validateExceptionSchema(exception);
-  if (schemaError) {
-    return reject('EXCEPTION_SCHEMA_INVALID', exception, observed, {
-      summary: `Audit policy rejected: the exception record is invalid — ${schemaError}`,
-    });
-  }
-  observed.exceptionId = exception.id;
-  observed.exceptionExpiryDate = exception.expiryDate;
-
-  // --- 1. Normalise and validate the audit payload. ---
-  const parsed = parseAuditJson(auditJson);
-  if (!parsed.ok) {
-    return reject('AUDIT_JSON_MALFORMED', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): the npm audit output is not usable — ${parsed.error}`,
-    });
-  }
-  const audit = parsed.value;
-
-  // --- 2. npm exit-code contract. ---
-  if (npmExitCode !== 0 && npmExitCode !== 1) {
-    return reject('NPM_UNEXPECTED_EXIT_CODE', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): npm audit exited with ${npmExitCode}, which is neither a clean result (0) nor an expected vulnerabilities-found result (1).`,
-    });
-  }
-
-  // --- 3. Infrastructure failure detection. A nonzero audit must be a real
-  //         vulnerability result, not a registry/network/auth failure; this runs
-  //         before the metadata requirement so an npm error body is classified
-  //         as an infrastructure failure rather than a malformed audit. ---
-  const infraError = detectInfrastructureFailure({ audit, npmExitCode });
-  if (infraError) {
-    return reject(infraError.code, exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): npm reported an infrastructure failure rather than a vulnerability result — ${infraError.detail}`,
-    });
-  }
-
-  // --- 4. Required metadata must be present. ---
-  const metadata = audit.metadata;
-  if (!metadata || !metadata.vulnerabilities) {
-    return reject('AUDIT_METADATA_MISSING', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): the audit result lacks the required metadata.vulnerabilities block.`,
-    });
-  }
-
-  const vulns = objectValue(audit, 'vulnerabilities') || {};
-  const vulnEntries = objectEntries(vulns);
-  const severityTotals = metadata.vulnerabilities;
-
-  observed.totalVulnerabilities =
-    typeof severityTotals.total === 'number' ? severityTotals.total : vulnEntries.length;
-
-  // --- 5. Clean audit: accept without using the exception. ---
-  if (
-    observed.totalVulnerabilities === 0 &&
-    vulnEntries.length === 0 &&
-    npmExitCode === 0
-  ) {
-    return {
-      accepted: true,
-      reasonCode: 'CLEAN_AUDIT',
-      summary: `Audit clean (${scope} scope): 0 vulnerabilities reported. No exception required.`,
-      observed,
-    };
-  }
-
-  // --- 6. Collect every concrete advisory object across all `via` arrays. ---
-  const advisoryObjects = [];
-  for (const [packageName, entry] of vulnEntries) {
-    const via = arrayValue(entry, 'via');
-    if (!Array.isArray(via)) {
-      return reject('VIA_MALFORMED', exception, observed, {
-        summary: `Audit policy rejected (${scope} scope): the "${packageName}" entry has a malformed "via" field (expected an array).`,
-      });
-    }
-    for (const ref of via) {
-      if (isPlainObject(ref)) {
-        advisoryObjects.push(ref);
-      } else if (typeof ref !== 'string') {
-        return reject('VIA_MALFORMED', exception, observed, {
-          summary: `Audit policy rejected (${scope} scope): the "${packageName}" entry contains a "via" reference of an unsupported type (${typeof ref}).`,
-        });
-      }
-    }
-  }
-  observed.advisoryObjects = advisoryObjects;
-
-  // --- 7. Exactly one unique concrete advisory object. ---
-  const uniqueAdvisories = uniqueAdvisoryObjects(advisoryObjects);
-  if (uniqueAdvisories.length === 0) {
-    return reject('NO_CONCRETE_ADVISORY', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): vulnerabilities are reported but no concrete advisory object was found in any "via" array.`,
-    });
-  }
-  if (uniqueAdvisories.length > 1) {
-    return reject('MULTIPLE_ADVISORY_OBJECTS', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): ${uniqueAdvisories.length} distinct advisory objects were found across the "via" arrays; the approved exception covers exactly one.`,
-    });
-  }
-  const advisory = uniqueAdvisories[0];
-
-  // --- 8. CVE conflict detection (absence is allowed; conflict is not). ---
-  const cveError = checkCveConsistency(advisory, exception);
-  if (cveError) {
-    return reject(cveError.code, exception, observed, { summary: cveError.detail });
-  }
-
-  // --- 9. Advisory identity, severity, and CVSS must match the exception exactly. ---
-  const advisoryError = checkAdvisoryIdentity(advisory, exception);
-  if (advisoryError) {
-    return reject(advisoryError.code, exception, observed, { summary: advisoryError.detail });
-  }
-
-  // --- 10. The affected package's installed version must be exactly the recorded one. ---
-  const resolvedVersions = resolveInstalledVersions(installedVersions, audit);
-  const versionError = checkInstalledVersion(advisory, vulnEntries, exception, resolvedVersions);
-  if (versionError) {
-    return reject(versionError.code, exception, observed, { summary: versionError.detail });
-  }
-
-  // --- 11. Every vulnerability package entry must be in the approved set. ---
-  const scopeKey = scope === 'production' ? 'allowedProductionPackages' : 'allowedBarePackages';
-  const allowed = arrayValue(exception, scopeKey);
-  if (!Array.isArray(allowed) || allowed.length === 0) {
-    return reject('EXCEPTION_SCHEMA_INVALID', exception, observed, {
-      summary: `Audit policy rejected: the exception record has no "${scopeKey}" array for the "${scope}" scope.`,
-    });
-  }
-  const allowedSet = new Set(allowed);
-  const observedPackages = vulnEntries.map(([name]) => name);
-  observed.vulnerabilityPackages = observedPackages;
-
-  const unexpected = observedPackages.filter((name) => !allowedSet.has(name));
-  if (unexpected.length > 0) {
-    return reject('UNEXPECTED_VULNERABLE_PACKAGE', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): additional vulnerable package entries are present that the exception does not cover: ${sortedList(unexpected)}.`,
-    });
-  }
-  const observedSet = new Set(observedPackages);
-  const expectedMissing = allowed.filter((name) => !observedSet.has(name));
-  if (expectedMissing.length > 0) {
-    return reject('MISSING_EXPECTED_PACKAGE', exception, observed, {
-      summary: `Audit policy rejected (${scope} scope): expected package entries are absent from the audit: ${sortedList(expectedMissing)}.`,
-    });
-  }
-
-  // --- 12. Every severity on every entry must equal the recorded severity. ---
-  for (const [packageName, entry] of vulnEntries) {
-    const sev = entry && typeof entry.severity === 'string' ? entry.severity : null;
-    if (sev !== exception.severity) {
-      return reject('SEVERITY_MISMATCH', exception, observed, {
-        summary: `Audit policy rejected (${scope} scope): the "${packageName}" entry has severity "${sev}"; the exception covers only "${exception.severity}".`,
-      });
-    }
-  }
-
-  // --- 13. Every non-object `via` reference must resolve to a package inside the approved set. ---
-  for (const [packageName, entry] of vulnEntries) {
-    const via = arrayValue(entry, 'via');
-    for (const ref of via) {
-      if (typeof ref === 'string' && !allowedSet.has(ref)) {
-        return reject('VIA_PACKAGE_NOT_ALLOWED', exception, observed, {
-          summary: `Audit policy rejected (${scope} scope): the "${packageName}" entry references "${ref}" via a package name; that package is not in the approved set for this scope.`,
-        });
-      }
-    }
-  }
-
-  // --- 14. Metadata severity totals must be exactly the expected composition. ---
-  const totalsError = checkSeverityTotals(severityTotals, vulnEntries.length, scope, exception);
-  if (totalsError) {
-    return reject(totalsError.code, exception, observed, { summary: totalsError.detail });
-  }
-
-  // --- 15. Expiry: reject strictly after the recorded timestamp. ---
-  const nowMs = normaliseTime(now);
-  const expiryMs = normaliseTime(exception.expiryDate);
-  if (!Number.isFinite(expiryMs)) {
-    return reject('EXCEPTION_SCHEMA_INVALID', exception, observed, {
-      summary: 'Audit policy rejected: the exception record has an unparseable expiryDate.',
-    });
-  }
-  observed.expired = nowMs > expiryMs;
-  if (observed.expired) {
-    return reject('EXCEPTION_EXPIRED', exception, observed, {
-      summary: `Audit policy rejected: the exception expired on ${exception.expiryDate}. Human review is required. The gate will remain red until the advisory is remediated or a new exception is authorized with fresh evidence.`,
-    });
-  }
-
-  // --- 16. All checks passed: the audit is exactly the approved accepted risk. ---
-  return {
-    accepted: true,
-    reasonCode: 'EXCEPTION_APPLIED',
-    summary: [
-      `Accepted risk (${scope} scope): the audit reports exactly one approved advisory — ${exception.advisory} (${exception.cve}) on ${exception.package}@${exception.affectedVersion}, severity ${exception.severity}, CVSS ${exception.cvssScore}.`,
-      `Expiry: ${exception.expiryDate}. Review cadence: every ${exception.reviewCadenceDays} days. This exception does not declare the package safe; the vulnerability is real and remains unpatched.`,
-    ].join(' '),
-    observed,
-  };
-}
-
-/* -------------------------------------------------------------------------
- * Layer B — CLI wrapper.
- * ------------------------------------------------------------------------- */
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '..');
-const EXCEPTION_PATH = path.join(REPO_ROOT, 'config', 'audit-exceptions.json');
-
-const SCOPES = [
-  { name: 'production', args: ['audit', '--omit=dev', '--json'] },
-  { name: 'bare', args: ['audit', '--json'] },
-];
-
-/**
- * Run one `npm audit` invocation without a shell and return a captured result.
- * No user-controlled value is interpolated into the command. When the resolved
- * npm entry point is a JavaScript file it is executed through the current Node
- * executable, because `child_process.spawn` cannot launch a `.js` file directly
- * on Windows.
- *
- * @returns {Promise<{ ok: boolean, stdout: string, stderr: string, exitCode: number|null, error: string|null }>}
- */
-export function runNpmAudit({ npmPath, args, cwd }) {
-  return new Promise((resolve) => {
-    const command = resolveNpmCommand(npmPath, args);
-    let child;
-    try {
-      child = spawn(command.executable, command.arguments, { cwd, shell: false, encoding: 'utf8' });
-    } catch (err) {
-      resolve({ ok: false, stdout: '', stderr: String(err && err.message ? err.message : err), exitCode: null, error: 'spawn-failed' });
-      return;
-    }
-    if (!child || typeof child.stdout !== 'object') {
-      resolve({ ok: false, stdout: '', stderr: '', exitCode: null, error: 'spawn-failed' });
-      return;
-    }
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('error', (err) => {
-      resolve({ ok: false, stdout, stderr: appendError(stderr, err), exitCode: null, error: 'process-error' });
-    });
-    child.on('close', (code, signal) => {
-      if (signal) {
-        resolve({ ok: false, stdout, stderr: appendError(stderr, new Error(`npm process terminated by signal ${signal}`)), exitCode: null, error: 'signal' });
-        return;
-      }
-      resolve({ ok: true, stdout, stderr, exitCode: code === null ? null : code, error: null });
-    });
-  });
-}
-
-function resolveNpmCommand(npmPath, args) {
-  if (typeof npmPath === 'string' && npmPath.toLowerCase().endsWith('.js')) {
-    return { executable: process.execPath, arguments: [npmPath, ...args] };
-  }
-  return { executable: npmPath, arguments: args };
-}
-
-async function main() {
-  let exception;
-  try {
-    exception = JSON.parse(readFileSync(EXCEPTION_PATH, 'utf8'));
-  } catch (err) {
-    console.error(`Audit policy: the exception record at ${EXCEPTION_PATH} could not be read or parsed: ${describeError(err)}`);
-    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-    return;
-  }
-
-  const schemaError = validateExceptionSchema(exception);
-  if (schemaError) {
-    console.error(`Audit policy: the exception record at ${EXCEPTION_PATH} is invalid: ${schemaError}`);
-    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-    return;
-  }
-
-  const npmPath = resolveNpmPath();
-  if (!npmPath) {
-    console.error('Audit policy: no npm executable could be resolved for this platform.');
-    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-    return;
-  }
-
-  // Installed versions are resolved from the committed dependency tree, not from
-  // the advisory metadata (npm audit does not report per-node versions).
-  const lockfilePath = path.join(REPO_ROOT, 'package-lock.json');
-  let installedVersions = null;
-  try {
-    installedVersions = readInstalledVersions(lockfilePath);
-  } catch (err) {
-    console.error(`Audit policy: the dependency tree at ${lockfilePath} could not be read: ${describeError(err)}`);
-    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-    return;
-  }
-
-  const now = new Date();
-  let failures = 0;
-
-  for (const scope of SCOPES) {
-    const result = await runNpmAudit({ npmPath, args: scope.args, cwd: REPO_ROOT });
-
-    if (!result.ok) {
-      // Spawn/process failure: the CLI boundary reports the rejection.
-      console.error(`Audit policy (${scope.name} scope): the npm audit command could not run — ${result.error}.`);
-      console.error(indentStderr(result.stderr));
-      failures += 1;
-      continue;
-    }
-
-    if (result.stdout.length === 0) {
-      console.error(`Audit policy (${scope.name} scope): npm audit produced no output.`);
-      console.error(indentStderr(result.stderr));
-      failures += 1;
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch (err) {
-      console.error(`Audit policy (${scope.name} scope): npm audit output is not valid JSON: ${describeError(err)}`);
-      failures += 1;
-      continue;
-    }
-
-    const evaluation = evaluateAuditPolicy({
-      auditJson: parsed,
-      npmExitCode: result.exitCode,
-      scope: scope.name,
-      exception,
-      now,
-      installedVersions,
-    });
-
-    if (evaluation.accepted) {
-      if (evaluation.reasonCode === 'EXCEPTION_APPLIED') {
-        const version = installedVersions[exception.package];
-        console.warn(`Warning: ${evaluation.summary}`);
-        console.warn(
-          `Warning: ${exception.package} installed version resolved from the dependency tree: ${version}. Expiry: ${exception.expiryDate}. Owner: ${exception.owner}.`,
-        );
-      } else {
-        console.log(`Audit policy (${scope.name} scope): ${evaluation.summary}`);
-      }
-    } else {
-      console.error(`Audit policy (${scope.name} scope): ${evaluation.summary}`);
-      if (result.stderr && result.stderr.trim().length > 0) {
-        console.error(indentStderr(result.stderr));
-      }
-      failures += 1;
-    }
-  }
-
-  if (failures > 0) {
-    console.error(`Audit policy: ${failures} of ${SCOPES.length} scope(s) rejected. This gate fails closed.`);
-    process.exitCode = EXIT_POLICY_REJECT;
-    return;
-  }
-  console.log('Audit policy: all scopes accepted.');
-}
-
-/**
- * Resolve the npm executable/CLI entry point for the current platform. Pure
- * with respect to the audit policy itself (used only by the CLI wrapper);
- * exported for diagnostics and tests.
- */
-export function resolveNpmPath() {
-  // Prefer an explicit override only when it is a path to an executable; no
-  // unvalidated value is ever interpolated into a command.
-  const candidate = process.env && process.env.NPM_PATH ? process.env.NPM_PATH : null;
-  if (candidate && candidate.length > 0 && !candidate.includes(' ')) {
-    return candidate;
-  }
-  if (process.platform !== 'win32') {
-    return 'npm';
-  }
-  // Windows: the `npm.cmd` shim cannot be spawned without a shell, so resolve
-  // the CLI entry point the shim would execute. `npm_execpath` is correct when
-  // npm launched this process; otherwise search the standard install layouts.
-  const execPath = process.env && process.env.npm_execpath;
-  if (typeof execPath === 'string' && execPath.length > 0 && fileExists(execPath)) {
-    return execPath;
-  }
-  // Prefer the running Node's own directory first (where npm lives in a normal
-  // install), then the standard Windows install roots, then the tool-tree
-  // siblings of the runtime directory (for bundled runtimes that ship without
-  // npm — e.g. a Playwright-Go Node 22 next to a node-26 tree that has npm).
-  const nodeDir = path.dirname(process.execPath);
-  const found = findNpmCli(nodeDir);
-  if (found) return found;
-  for (const root of windowsSearchRoots()) {
-    const located = findNpmCli(root);
-    if (located) return located;
-  }
-  return path.join(nodeDir, NPM_CLI_RELATIVE);
-}
-
-function windowsSearchRoots() {
-  const roots = [];
-  const nodeDir = path.dirname(process.execPath);
-  // Sibling tool distributions can ship npm in a *different* directory than the
-  // running Node executable, so search the runtime's parent directory and its
-  // siblings before falling back to the system roots.
-  roots.push(path.dirname(nodeDir));
-  for (const name of ['LOCALAPPDATA', 'APPDATA', 'ProgramFiles', 'ProgramFiles(x86)']) {
-    const value = process.env ? process.env[name] : null;
-    if (typeof value === 'string' && value.length > 0 && !roots.includes(value)) roots.push(value);
-  }
-  return roots;
-}
-
-const NPM_CLI_RELATIVE = path.join('node_modules', 'npm', 'bin', 'npm-cli.js');
-const NPM_VERSION_CLI_RELATIVE = path.join('bin', 'npm-cli.js');
-// Never descend into these trees: they contain no npm CLI and are large.
-const SEARCH_SKIP_DIRS = new Set([
-  '.git',
-  '.next',
-  'coverage',
-  'Temp',
-  'Packages',
-  'Microsoft',
-  'browsers',
-  'browser_patches',
-  'ffmpeg',
-  'chromium',
-  'chromium-1208',
-  'agent-browser-0.26.0-win32-x64',
-  'cua-driver-0.21.0-win32-x64',
-  'git-2.53.0+3-win32-x64',
-  'npm-12.0.2-win32-x64',
-]);
-
-/**
- * Locate an npm CLI entry point with a bounded, read-only walk. Needed because
- * some bundled Node runtimes (e.g. the Playwright-Go distribution used here for
- * Node 22 validation) ship without npm, while a sibling tool tree on the same
- * machine does. The walk is capped so it cannot scan the whole filesystem and
- * skips known irrelevant trees, but it does descend into `node_modules`
- * directories, because some distributions ship npm one or two levels below the
- * tool root (e.g. `<tools>/node-26.7.0-win32-x64/node_modules/npm/bin/npm-cli.js`).
- */
-function findNpmCli(root) {
-  let rootPath = root;
-  try {
-    rootPath = fsRealpathSync(root);
-  } catch {
-    return null;
-  }
-  const stack = [rootPath];
-  let visited = 0;
-  while (stack.length > 0 && visited < 1000) {
-    const dir = stack.pop();
-    visited += 1;
-    const candidates = [
-      path.join(dir, NPM_CLI_RELATIVE),
-      path.join(dir, NPM_VERSION_CLI_RELATIVE),
-    ];
-    for (const candidate of candidates) {
-      if (fileExists(candidate)) return candidate;
-    }
-    let entries = [];
-    try {
-      entries = fsReaddirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith('.') || SEARCH_SKIP_DIRS.has(entry.name)) continue;
-      stack.push(path.join(dir, entry.name));
-    }
-  }
-  return null;
-}
-
-/* -------------------------------------------------------------------------
- * Shared validation helpers (used by both layers; all pure).
- * ------------------------------------------------------------------------- */
-
-const REQUIRED_EXCEPTION_FIELDS = [
-  'schemaVersion',
+const REQUIRED_EXCEPTION_FIELDS = Object.freeze([
   'id',
+  'scope',
   'advisory',
   'cve',
   'npmAuditSource',
@@ -572,506 +76,1127 @@ const REQUIRED_EXCEPTION_FIELDS = [
   'cvssVector',
   'allowedProductionPackages',
   'allowedBarePackages',
-  'owner',
-  'rationale',
   'approvalDate',
   'expiryDate',
   'reviewCadenceDays',
+  'owner',
+  'rationale',
   'reviewInstructions',
   'upstreamLinks',
-];
-
-function validateExceptionSchema(exception) {
-  if (!isPlainObject(exception)) {
-    return 'the record must be a JSON object';
-  }
-  for (const field of REQUIRED_EXCEPTION_FIELDS) {
-    if (!(field in exception) || exception[field] === null || exception[field] === undefined) {
-      return `the required field "${field}" is missing`;
-    }
-  }
-  const str = (name) =>
-    typeof exception[name] !== 'string' || exception[name].trim().length === 0
-      ? `the field "${name}" must be a non-empty string`
-      : null;
-  for (const name of ['id', 'advisory', 'cve', 'package', 'affectedVersion', 'severity', 'owner', 'approvalDate', 'expiryDate', 'cvssVector']) {
-    const err = str(name);
-    if (err) return err;
-  }
-  if (!Number.isFinite(exception.npmAuditSource)) {
-    return 'the field "npmAuditSource" must be a number';
-  }
-  if (!Number.isFinite(exception.cvssScore)) {
-    return 'the field "cvssScore" must be a number';
-  }
-  if (!Array.isArray(exception.allowedProductionPackages) || exception.allowedProductionPackages.length === 0) {
-    return 'the field "allowedProductionPackages" must be a non-empty array';
-  }
-  if (!Array.isArray(exception.allowedBarePackages) || exception.allowedBarePackages.length === 0) {
-    return 'the field "allowedBarePackages" must be a non-empty array';
-  }
-  if (!Number.isFinite(exception.reviewCadenceDays)) {
-    return 'the field "reviewCadenceDays" must be a number';
-  }
-  if (!Array.isArray(exception.upstreamLinks) || exception.upstreamLinks.length === 0) {
-    return 'the field "upstreamLinks" must be a non-empty array';
-  }
-  if (Number.isFinite(normaliseTime(exception.expiryDate)) === false) {
-    return 'the field "expiryDate" is not a parseable date';
-  }
-  return null;
-}
-
-function checkAdvisoryIdentity(advisory, exception) {
-  if (advisory.source !== exception.npmAuditSource) {
-    return {
-      code: 'ADVISORY_SOURCE_MISMATCH',
-      detail: `The advisory's npm audit source is ${JSON.stringify(advisory.source)}; the exception records ${JSON.stringify(exception.npmAuditSource)}.`,
-    };
-  }
-  const advisoryName = typeof advisory.dependency === 'string' ? advisory.dependency : advisory.name;
-  if (advisoryName !== exception.package) {
-    return {
-      code: 'ADVISORY_PACKAGE_MISMATCH',
-      detail: `The advisory's resolved package is "${advisoryName}"; the exception records "${exception.package}".`,
-    };
-  }
-  if (typeof advisory.url !== 'string' || !advisory.url.endsWith(exception.advisory)) {
-    return {
-      code: 'ADVISORY_URL_MISMATCH',
-      detail: `The advisory URL is ${JSON.stringify(advisory.url)}; the exception covers ${exception.advisory}.`,
-    };
-  }
-  if (advisory.severity !== exception.severity) {
-    return {
-      code: 'ADVISORY_SEVERITY_MISMATCH',
-      detail: `The advisory severity is "${advisory.severity}"; the exception covers "${exception.severity}".`,
-    };
-  }
-  const score = extractCvssScore(advisory);
-  if (!sameNumber(score, exception.cvssScore)) {
-    return {
-      code: 'CVSS_SCORE_MISMATCH',
-      detail: `The advisory CVSS score is ${JSON.stringify(score)}; the exception records ${exception.cvssScore}.`,
-    };
-  }
-  const vector = extractCvssVector(advisory);
-  if (vector !== exception.cvssVector) {
-    return {
-      code: 'CVSS_VECTOR_MISMATCH',
-      detail: `The advisory CVSS vector is ${JSON.stringify(vector)}; the exception records ${JSON.stringify(exception.cvssVector)}.`,
-    };
-  }
-  if (!rangeIncludes(advisory.range, exception.affectedVersion)) {
-    return {
-      code: 'AFFECTED_VERSION_OUT_OF_RANGE',
-      detail: `The advisory's vulnerable range is ${JSON.stringify(advisory.range)} and does not include the recorded affected version ${exception.affectedVersion}.`,
-    };
-  }
-  return null;
-}
+]);
 
 /**
- * Resolve installed package versions, in this priority order:
- *   1. an explicit `installedVersions` map (injected by unit tests or by a caller
- *      that has already read the lockfile);
- *   2. a `lockfile` object carried inside the audit payload (an injected fixture);
- *   3. `audit.packages` (npm audit v3 shape) — the dependency tree npm itself
- *      resolved, which is the production CLI's source of truth.
+ * Directories never enqueued by the bounded BFS fallback. Only the git
+ * object database is skipped: npm-cli.js can only live under a node install
+ * (including node_modules trees), so node_modules itself must be traversed.
  */
-function resolveInstalledVersions(installedVersions, audit) {
-  if (isPlainObject(installedVersions)) {
-    return installedVersions;
-  }
-  if (isPlainObject(audit) && isPlainObject(audit.lockfile)) {
-    const fromLockfile = collectLockfileVersions(audit.lockfile);
-    if (Object.keys(fromLockfile).length > 0) return fromLockfile;
-  }
-  if (isPlainObject(audit) && isPlainObject(audit.packages)) {
-    return collectAuditPackagesVersions(audit.packages);
-  }
-  return {};
+const BFS_SKIP_DIRS = new Set(['.git']);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function collectLockfileVersions(lockfile) {
-  const versions = {};
-  const packages = objectValue(lockfile, 'packages');
-  if (isPlainObject(packages)) {
-    for (const [key, entry] of Object.entries(packages)) {
-      if (key === '') continue; // the root project entry
-      const name = lockfilePackageName(key);
-      if (name && entry && typeof entry.version === 'string') {
-        versions[name] = entry.version;
-      }
-    }
-  }
-  // Lockfile v2 (`dependencies`) nested tree: record the hoisted top-level copy
-  // for each name, plus any nested copy so nothing is missed.
-  const dependencies = objectValue(lockfile, 'dependencies');
-  if (isPlainObject(dependencies)) {
-    collectLockfileV2Dependencies(dependencies, versions);
-  }
-  return versions;
+function objectValue(object, key) {
+  return isPlainObject(object) && isPlainObject(object[key]) ? object[key] : null;
 }
 
-function collectLockfileV2Dependencies(dependencies, versions) {
-  for (const [name, entry] of Object.entries(dependencies)) {
-    if (!isPlainObject(entry)) continue;
-    if (typeof entry.version === 'string' && !(name in versions)) {
-      versions[name] = entry.version;
-    }
-    const nested = objectValue(entry, 'dependencies');
-    if (isPlainObject(nested)) {
-      collectLockfileV2Dependencies(nested, versions);
-    }
-  }
+function arrayValue(object, key) {
+  return isPlainObject(object) && Array.isArray(object[key]) ? object[key] : null;
 }
 
-function collectAuditPackagesVersions(packages) {
-  const versions = {};
-  for (const [key, entry] of Object.entries(packages)) {
-    const name = lockfilePackageName(key);
-    if (name && entry && typeof entry.version === 'string') {
-      versions[name] = entry.version;
-    }
-  }
-  return versions;
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
-/**
- * npm lockfile v3 keys are `node_modules/<name>` (or bare `node_modules/<nested
- * path>/node_modules/<name>`); the package name is the final path segment.
- */
-function lockfilePackageName(key) {
-  if (typeof key !== 'string') return null;
-  if (key === '') return null;
-  const normalized = key.replace(/\\/g, '/');
-  const index = normalized.lastIndexOf('/');
-  return index === -1 ? normalized : normalized.slice(index + 1);
-}
-
-function checkInstalledVersion(advisory, vulnEntries, exception, resolvedVersions) {
-  const entry = vulnEntries.find(([, candidate]) => candidate && candidate.name === exception.package);
-  if (!entry) {
-    return {
-      code: 'INSTALLED_VERSION_UNRESOLVED',
-      detail: `The package "${exception.package}" was expected in the vulnerability map but is absent.`,
-    };
-  }
-  // The single hoisted physical copy is reported at node_modules/<package>.
-  const nodes = arrayValue(entry[1], 'nodes');
-  const physical = nodes.filter((node) => node === `node_modules/${exception.package}`);
-  if (physical.length === 0) {
-    return {
-      code: 'INSTALLED_VERSION_UNRESOLVED',
-      detail: `No physical copy of "${exception.package}" was found at node_modules/${exception.package}; reported nodes: ${sortedList(nodes)}.`,
-    };
-  }
-  // The version resolved from the dependency tree must be exactly the recorded
-  // one. A different flagged version is version drift, not an accepted state.
-  const version = isPlainObject(resolvedVersions) ? resolvedVersions[exception.package] : undefined;
-  if (typeof version !== 'string' || version.length === 0) {
-    return {
-      code: 'INSTALLED_VERSION_UNRESOLVED',
-      detail: `The installed version of "${exception.package}" could not be resolved from the dependency tree.`,
-    };
-  }
-  if (version !== exception.affectedVersion) {
-    return {
-      code: 'INSTALLED_VERSION_DRIFT',
-      detail: `The dependency tree resolves "${exception.package}" to ${JSON.stringify(version)}; the exception records ${exception.affectedVersion}.`,
-    };
-  }
-  return null;
-}
-
-function checkCveConsistency(advisory, exception) {
-  const candidates = [
-    advisory.cve,
-    advisory.cwe && advisory.cwe.cve,
-    advisory.cvss && advisory.cvss.cve,
-  ].filter((value) => typeof value === 'string' && value.trim().length > 0);
-  const aliases = arrayValue(advisory, 'aliases')
-    .concat(arrayValue(advisory, 'identifiers'))
-    .filter((value) => typeof value === 'string' && value.trim().length > 0);
-  const present = new Set([...candidates, ...aliases].map((value) => value.trim()));
-  for (const value of present) {
-    if (looksLikeCve(value) && value !== exception.cve) {
-      return {
-        code: 'CVE_CONFLICT',
-        detail: `The audit result explicitly references ${value}, which conflicts with the exception's recorded CVE ${exception.cve}.`,
-      };
-    }
-  }
-  return null;
-}
-
-function checkSeverityTotals(severityTotals, entryCount, scope, exception) {
-  const expected = severityTotals.total;
-  if (typeof expected !== 'number' || expected !== entryCount) {
-    return {
-      code: 'METADATA_TOTAL_MISMATCH',
-      detail: `The metadata reports a total of ${JSON.stringify(expected)} vulnerabilities while ${entryCount} package entries are present (${scope} scope).`,
-    };
-  }
-  const forbidden = ['info', 'low', 'moderate', 'critical'];
-  const found = forbidden.filter((level) => severityTotals[level] !== 0 && severityTotals[level] !== undefined && severityTotals[level] !== null);
-  if (found.length > 0) {
-    return {
-      code: 'SEVERITY_TOTALS_NONHIGH',
-      detail: `The metadata reports non-high severity counts: ${found.map((level) => `${level} = ${severityTotals[level]}`).join(', ')} (${scope} scope).`,
-    };
-  }
-  if (severityTotals.high !== expected) {
-    return {
-      code: 'SEVERITY_TOTALS_MISMATCH',
-      detail: `The metadata reports high = ${severityTotals.high} while total = ${expected} (${scope} scope); every finding must be ${exception.severity}.`,
-    };
-  }
-  return null;
-}
-
-/**
- * Distinguish a genuine vulnerability result from an npm/registry failure.
- * npm prints a JSON error body (with `error.code`) or an E* message to stderr
- * when the registry is unreachable or authentication fails; a real audit result
- * has `auditReportVersion` and a `metadata` block.
- */
-function detectInfrastructureFailure({ audit, npmExitCode }) {
-  if (npmExitCode === 0) {
-    return null; // A clean result is never an infrastructure failure.
-  }
-  if (isPlainObject(audit.error) || audit.errorCode) {
-    return {
-      code: 'NPM_INFRASTRUCTURE_FAILURE',
-      detail: `npm reported an error result (code ${JSON.stringify((audit.error && audit.error.code) || audit.errorCode)}).`,
-    };
-  }
-  if (audit.auditReportVersion === undefined && !audit.metadata) {
-    return {
-      code: 'NPM_INFRASTRUCTURE_FAILURE',
-      detail: 'the result has neither an audit report version nor metadata, so it is not a vulnerability result.',
-    };
-  }
-  return null;
-}
-
-function parseAuditJson(auditJson) {
-  if (isPlainObject(auditJson)) {
-    return { ok: true, value: auditJson };
-  }
-  if (typeof auditJson !== 'string') {
-    return { ok: false, error: 'the audit payload is neither parsed JSON nor a JSON string' };
-  }
-  if (auditJson.trim().length === 0) {
-    return { ok: false, error: 'the audit output is empty' };
+function isValidHttpUrl(value) {
+  if (!nonEmptyString(value)) {
+    return false;
   }
   try {
-    const value = JSON.parse(auditJson);
-    if (!isPlainObject(value)) {
-      return { ok: false, error: 'the parsed audit JSON is not an object' };
-    }
-    return { ok: true, value };
-  } catch (err) {
-    return { ok: false, error: describeError(err) };
-  }
-}
-
-/* -------------------------------------------------------------------------
- * Small utilities (pure, dependency-free).
- * ------------------------------------------------------------------------- */
-
-/**
- * Read a lockfile and return a package-name → version map for the hoisted
- * (top-level `node_modules/<name>`) physical copies. Lockfile v3 keys are used
- * as-is; lockfile v2 `dependencies` are walked collecting the hoisted copies.
- * Exported for unit tests.
- */
-export function readInstalledVersions(lockfilePath) {
-  const text = readFileSync(lockfilePath, 'utf8');
-  const lockfile = JSON.parse(text);
-  return resolveInstalledVersions(null, { lockfile });
-}
-
-function fileExists(candidate) {
-  try {
-    return statSync(candidate).isFile();
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch {
     return false;
   }
 }
 
-function reject(reasonCode, exception, observed, detail) {
-  return {
-    accepted: false,
-    reasonCode,
-    summary: detail.summary,
-    observed,
-  };
+/**
+ * Phase 16B exception schema (J3):
+ * - `scope` must be exactly 'production' or 'bare'.
+ * - `cvssVector` must be null or a non-empty string (never an empty string).
+ * - both allowed-package lists must be arrays of unique non-empty strings;
+ *   the list for the exception's own scope must be non-empty (an exception
+ *   that authorizes nothing in its governed scope is meaningless), while the
+ *   other scope's list may be empty (that scope must stay clean).
+ */
+export function validateExceptionSchema(exception) {
+  const errors = [];
+  if (!isPlainObject(exception)) {
+    return ['exception record must be a JSON object'];
+  }
+
+  for (const field of REQUIRED_EXCEPTION_FIELDS) {
+    if (!(field in exception)) {
+      errors.push(`missing required field '${field}'`);
+    }
+  }
+  if (errors.length > 0) {
+    return errors;
+  }
+
+  const requiredStringFields = [
+    'id',
+    'advisory',
+    'cve',
+    'package',
+    'affectedVersion',
+    'owner',
+    'rationale',
+    'reviewInstructions',
+  ];
+  for (const field of requiredStringFields) {
+    if (!nonEmptyString(exception[field])) {
+      errors.push(`field '${field}' must be a non-empty string`);
+    }
+  }
+
+  if (!SCOPE_VALUES.includes(exception.scope)) {
+    errors.push(`field 'scope' must be one of: ${SCOPE_VALUES.join(', ')} (got ${JSON.stringify(exception.scope)})`);
+  }
+  if (!SEVERITY_LEVELS.includes(exception.severity)) {
+    errors.push(`field 'severity' must be one of: ${SEVERITY_LEVELS.join(', ')} (got ${JSON.stringify(exception.severity)})`);
+  }
+  if (!Number.isInteger(exception.npmAuditSource) || exception.npmAuditSource <= 0) {
+    errors.push(`field 'npmAuditSource' must be a positive integer (got ${JSON.stringify(exception.npmAuditSource)})`);
+  }
+  if (typeof exception.cvssScore !== 'number' || !Number.isFinite(exception.cvssScore)) {
+    errors.push(`field 'cvssScore' must be a finite number (got ${JSON.stringify(exception.cvssScore)})`);
+  }
+  if (exception.cvssVector !== null && !nonEmptyString(exception.cvssVector)) {
+    errors.push(`field 'cvssVector' must be null or a non-empty string (got ${JSON.stringify(exception.cvssVector)})`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(exception.approvalDate ?? ''))) {
+    errors.push(`field 'approvalDate' must be an ISO calendar date YYYY-MM-DD (got ${JSON.stringify(exception.approvalDate)})`);
+  }
+  if (Number.isNaN(Date.parse(String(exception.expiryDate ?? '')))) {
+    errors.push(`field 'expiryDate' must be a parseable ISO timestamp (got ${JSON.stringify(exception.expiryDate)})`);
+  }
+  if (!Number.isInteger(exception.reviewCadenceDays) || exception.reviewCadenceDays < 1) {
+    errors.push(`field 'reviewCadenceDays' must be an integer >= 1 (got ${JSON.stringify(exception.reviewCadenceDays)})`);
+  }
+
+  const governedList =
+    exception.scope === 'production' ? exception.allowedProductionPackages : exception.allowedBarePackages;
+  const governedName =
+    exception.scope === 'production' ? 'allowedProductionPackages' : 'allowedBarePackages';
+  if (!Array.isArray(governedList) || governedList.length === 0) {
+    errors.push(`field '${governedName}' must be a non-empty array for a ${exception.scope} exception`);
+  }
+
+  for (const field of ['allowedProductionPackages', 'allowedBarePackages']) {
+    const list = exception[field];
+    if (!Array.isArray(list)) {
+      if (!errors.some((error) => error.startsWith(`field '${field}'`))) {
+        errors.push(`field '${field}' must be an array of package names`);
+      }
+      continue;
+    }
+    const seen = new Set();
+    for (const entry of list) {
+      if (!nonEmptyString(entry)) {
+        errors.push(`field '${field}' must contain only non-empty strings (got ${JSON.stringify(entry)})`);
+        break;
+      }
+      if (seen.has(entry)) {
+        errors.push(`field '${field}' contains duplicate package '${entry}'`);
+        break;
+      }
+      seen.add(entry);
+    }
+  }
+
+  if (!Array.isArray(exception.upstreamLinks)) {
+    errors.push(`field 'upstreamLinks' must be an array of URLs`);
+  } else {
+    for (const link of exception.upstreamLinks) {
+      if (!isValidHttpUrl(link)) {
+        errors.push(`field 'upstreamLinks' must contain only http(s) URLs (got ${JSON.stringify(link)})`);
+        break;
+      }
+    }
+  }
+
+  return errors;
 }
 
-function isPlainObject(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+export function parseAuditJson(auditJson) {
+  let parsed;
+  try {
+    parsed = JSON.parse(auditJson);
+  } catch {
+    return { error: 'audit JSON is not parseable' };
+  }
+  if (!isPlainObject(parsed)) {
+    return { error: 'audit JSON root must be an object' };
+  }
+  return { value: parsed };
 }
 
-function arrayValue(object, key) {
-  if (!isPlainObject(object)) return [];
-  const value = object[key];
-  return Array.isArray(value) ? value : [];
+function normalizeNodePath(nodePath) {
+  return String(nodePath).replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
-function objectValue(object, key) {
-  if (!isPlainObject(object)) return undefined;
-  return object[key];
+/**
+ * F2: build a node-path -> installed-version map from the dependency tree.
+ * The key is the exact lockfile node path (e.g. 'node_modules/minimatch' or
+ * 'node_modules/typescript-estree/node_modules/minimatch'), so multiple
+ * physical copies of one package name are never collapsed into a single
+ * version and the flagged copy can be resolved deterministically.
+ */
+export function collectLockfilePathVersions(lockfile) {
+  const byNodePath = {};
+  const packages = objectValue(lockfile, 'packages');
+  if (isPlainObject(packages)) {
+    for (const [key, entry] of Object.entries(packages)) {
+      if (key === '') {
+        continue;
+      }
+      if (entry && typeof entry.version === 'string' && entry.version.length > 0) {
+        byNodePath[normalizeNodePath(key)] = entry.version;
+      }
+    }
+  }
+  const dependencies = objectValue(lockfile, 'dependencies');
+  if (isPlainObject(dependencies)) {
+    collectLockfileV2Paths(dependencies, '', byNodePath);
+  }
+  return byNodePath;
 }
 
-function objectEntries(value) {
-  if (!isPlainObject(value)) return [];
-  return Object.entries(value);
+function collectLockfileV2Paths(dependencies, prefix, out) {
+  for (const [name, entry] of Object.entries(dependencies)) {
+    const nodePath = prefix.length > 0 ? `${prefix}/node_modules/${name}` : `node_modules/${name}`;
+    if (entry && typeof entry.version === 'string' && entry.version.length > 0) {
+      out[nodePath] = entry.version;
+    }
+    const nested = objectValue(entry, 'dependencies');
+    if (nested) {
+      collectLockfileV2Paths(nested, nodePath, out);
+    }
+  }
+}
+
+export function resolveInstalledVersions(injected, audit) {
+  if (injected !== undefined) {
+    if (!isPlainObject(injected)) {
+      return null;
+    }
+    return injected;
+  }
+  const lockfile = objectValue(audit, 'lockfile');
+  if (lockfile) {
+    return collectLockfilePathVersions(lockfile);
+  }
+  const packages = objectValue(audit, 'packages');
+  if (packages) {
+    return collectLockfilePathVersions({ packages });
+  }
+  return null;
 }
 
 function extractCvssScore(advisory) {
-  if (isPlainObject(advisory.cvss) && Number.isFinite(advisory.cvss.score)) {
-    return advisory.cvss.score;
+  const direct = isPlainObject(advisory) ? advisory.cvssScore : undefined;
+  if (typeof direct === 'number' && Number.isFinite(direct)) {
+    return direct;
   }
-  if (Number.isFinite(advisory.cvss)) {
-    return advisory.cvss;
-  }
-  if (Number.isFinite(advisory.cvssScore)) {
-    return advisory.cvssScore;
+  const nested = isPlainObject(advisory?.cvss) ? advisory.cvss.score : undefined;
+  if (typeof nested === 'number' && Number.isFinite(nested)) {
+    return nested;
   }
   return null;
 }
 
 function extractCvssVector(advisory) {
-  if (isPlainObject(advisory.cvss) && typeof advisory.cvss.vectorString === 'string') {
-    return advisory.cvss.vectorString;
+  const direct = isPlainObject(advisory) ? advisory.vectorString : undefined;
+  if (typeof direct === 'string' && direct.trim().length > 0) {
+    return direct;
   }
-  if (typeof advisory.vectorString === 'string') {
-    return advisory.vectorString;
-  }
-  if (typeof advisory.cvssVector === 'string') {
-    return advisory.cvssVector;
+  const nested = isPlainObject(advisory?.cvss) ? advisory.cvss.vectorString : undefined;
+  if (typeof nested === 'string' && nested.trim().length > 0) {
+    return nested;
   }
   return null;
 }
 
 function sameNumber(a, b) {
-  return Number(a) === Number(b);
+  return (a === null && b === null) || (typeof a === 'number' && typeof b === 'number' && a === b);
 }
 
-/**
- * The audit reports the vulnerable range as an npm semver range (e.g. `<=3.0.3`).
- * Accept only the exact recorded version, and require it to be included in the
- * range. A different flagged version is version drift, not an accepted state.
- */
-function rangeIncludes(range, version) {
-  if (typeof range !== 'string' || typeof version !== 'string') return false;
-  const text = range.trim();
-  if (text.length === 0) return false;
-  const comparators = text.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
-  if (comparators.length === 0) return false;
-  return comparators.every((comparator) => satisfiesComparator(comparator, version));
-}
-
-function satisfiesComparator(comparator, version) {
-  const match = /^(<=|>=|<|>|=)?\s*(.+)$/.exec(comparator);
-  if (!match) return false;
-  const operator = match[1] || '=';
-  const bound = match[2].trim();
-  const comparison = compareVersions(version, bound);
-  switch (operator) {
-    case '<=':
-      return comparison <= 0;
-    case '>=':
-      return comparison >= 0;
-    case '<':
-      return comparison < 0;
-    case '>':
-      return comparison > 0;
-    default:
-      return comparison === 0;
-  }
-}
-
-function compareVersions(a, b) {
-  const partsA = String(a).split('.');
-  const partsB = String(b).split('.');
-  const length = Math.max(partsA.length, partsB.length);
-  for (let index = 0; index < length; index += 1) {
-    const left = partsA[index] !== undefined ? String(partsA[index]) : '0';
-    const right = partsB[index] !== undefined ? String(partsB[index]) : '0';
-    const leftNum = Number(left);
-    const rightNum = Number(right);
-    if (Number.isFinite(leftNum) && Number.isFinite(rightNum)) {
-      if (leftNum < rightNum) return -1;
-      if (leftNum > rightNum) return 1;
-    } else {
-      if (left < right) return -1;
-      if (left > right) return 1;
+function compareSemverTriple(a, b) {
+  const parse = (value) =>
+    String(value)
+      .trim()
+      .split('.')
+      .map((part) => {
+        const match = /^(\d+)/.exec(part);
+        return match ? Number(match[1]) : 0;
+      });
+  const left = parse(a);
+  const right = parse(b);
+  for (let index = 0; index < 3; index += 1) {
+    const aPart = left[index] ?? 0;
+    const bPart = right[index] ?? 0;
+    if (aPart < bPart) {
+      return -1;
+    }
+    if (aPart > bPart) {
+      return 1;
     }
   }
   return 0;
 }
 
-function looksLikeCve(value) {
-  return /^CVE-\d{4}-\d+$/i.test(String(value).trim());
+function satisfiesComparator(operator, version, comparatorVersion) {
+  const result = compareSemverTriple(version, comparatorVersion);
+  switch (operator) {
+    case '<':
+      return result < 0;
+    case '<=':
+      return result <= 0;
+    case '>':
+      return result > 0;
+    case '>=':
+      return result >= 0;
+    case '=':
+    case '==':
+      return result === 0;
+    default:
+      return false;
+  }
 }
 
-function uniqueAdvisoryObjects(advisories) {
-  const seen = new Set();
-  const unique = [];
-  for (const advisory of advisories) {
-    const key = JSON.stringify(advisory);
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(advisory);
+function rangeIncludes(range, version) {
+  if (!nonEmptyString(range) || !nonEmptyString(version)) {
+    return false;
+  }
+  const operators = ['<=', '>=', '<', '>', '=', '=='];
+  for (const part of String(range).split(/\s+/)) {
+    if (part.length === 0) {
+      continue;
+    }
+    for (const operator of operators) {
+      if (part.startsWith(operator)) {
+        return satisfiesComparator(operator, version, part.slice(operator.length));
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+function reject(code, summary, observed = {}) {
+  return { accepted: false, reasonCode: code, summary, observed };
+}
+
+function accept(reasonCode, summary, observed = {}) {
+  return { accepted: true, reasonCode, summary, observed };
+}
+
+function withObserved(result, extra) {
+  return { ...result, observed: { ...result.observed, ...extra } };
+}
+
+function checkCveConsistency(advisory, exception) {
+  const advisoryCve = isPlainObject(advisory) && nonEmptyString(advisory.cve) ? advisory.cve : null;
+  if (advisoryCve === null || advisoryCve === exception.cve) {
+    return null;
+  }
+  return reject(
+    'CVE_MISMATCH',
+    `advisory reports CVE '${advisoryCve}', but the exception records '${exception.cve}'`,
+  );
+}
+
+function checkAdvisoryIdentity(advisory, exception) {
+  if (advisory.source !== exception.npmAuditSource) {
+    return reject(
+      'ADVISORY_SOURCE_MISMATCH',
+      `advisory source is ${String(advisory.source)}, but the exception records npm audit source ${exception.npmAuditSource}`,
+    );
+  }
+  if (typeof advisory.url !== 'string' || !advisory.url.endsWith(exception.advisory)) {
+    return reject(
+      'ADVISORY_URL_MISMATCH',
+      `advisory URL does not reference ${exception.advisory}`,
+    );
+  }
+  if (advisory.dependency !== exception.package) {
+    return reject(
+      'ADVISORY_PACKAGE_MISMATCH',
+      `advisory targets package '${advisory.dependency}', but the exception records '${exception.package}'`,
+    );
+  }
+  if (advisory.severity !== exception.severity) {
+    return reject(
+      'ADVISORY_SEVERITY_MISMATCH',
+      `advisory severity is '${advisory.severity}', but the exception records '${exception.severity}'`,
+    );
+  }
+  const actualScore = extractCvssScore(advisory);
+  if (!sameNumber(actualScore, exception.cvssScore)) {
+    return reject(
+      'CVSS_SCORE_MISMATCH',
+      `advisory CVSS score is ${String(actualScore)}, but the exception records the exact npm-feed value ${exception.cvssScore}`,
+    );
+  }
+  const actualVector = extractCvssVector(advisory);
+  if (actualVector !== exception.cvssVector) {
+    return reject(
+      'CVSS_VECTOR_MISMATCH',
+      `advisory CVSS vector is '${actualVector === null ? 'null' : actualVector}', but the exception records '${exception.cvssVector === null ? 'null' : exception.cvssVector}'`,
+    );
+  }
+  if (!rangeIncludes(advisory.range, exception.affectedVersion)) {
+    return reject(
+      'ADVISORY_RANGE_MISMATCH',
+      `advisory range '${advisory.range}' does not include the recorded affected version ${exception.affectedVersion}`,
+    );
+  }
+  return null;
+}
+
+/**
+ * F2: every install node the audit flagged for the exception package must
+ * resolve, by its exact node path, to exactly the recorded affected version.
+ * Unflagged copies of the same package name are irrelevant by design.
+ */
+function checkInstalledVersion(vulnEntries, exception, versionsByNode) {
+  const target = vulnEntries.find(([name]) => name === exception.package);
+  if (!target) {
+    return reject(
+      'INSTALLED_VERSION_UNRESOLVED',
+      `installed version for '${exception.package}' could not be resolved; the package is absent from the audit`,
+    );
+  }
+  const nodes = arrayValue(target[1], 'nodes');
+  if (nodes.length === 0) {
+    return reject(
+      'INSTALLED_VERSION_UNRESOLVED',
+      `audit reports no install node for '${exception.package}'`,
+    );
+  }
+  const flaggedNodes = [];
+  const resolved = {};
+  for (const node of nodes) {
+    if (!nonEmptyString(node)) {
+      return reject('INSTALLED_VERSION_UNRESOLVED', `audit reports a malformed install node for '${exception.package}'`);
+    }
+    const key = normalizeNodePath(node);
+    const version = Object.prototype.hasOwnProperty.call(versionsByNode, key)
+      ? versionsByNode[key]
+      : undefined;
+    if (typeof version !== 'string' || version.length === 0) {
+      return reject(
+        'INSTALLED_VERSION_UNRESOLVED',
+        `flagged node '${node}' for '${exception.package}' is absent from the dependency tree`,
+      );
+    }
+    if (version !== exception.affectedVersion) {
+      return reject(
+        'INSTALLED_VERSION_DRIFT',
+        `flagged node '${node}' resolves to version ${version}, but the exception records ${exception.affectedVersion}`,
+      );
+    }
+    flaggedNodes.push(node);
+    resolved[key] = version;
+  }
+  return { flaggedNodes, resolved };
+}
+
+function checkPackageSet(vulnEntries, allowedPackages, scope) {
+  const allowed = new Set(allowedPackages);
+  const observed = new Set(vulnEntries.map(([name]) => name));
+  const unexpected = [...new Set(vulnEntries.map(([name]) => name).filter((name) => !allowed.has(name)))].sort();
+  if (unexpected.length > 0) {
+    return reject(
+      'UNEXPECTED_VULNERABLE_PACKAGE',
+      `vulnerable packages not in the approved ${scope} exception inventory: ${unexpected.join(', ')}`,
+    );
+  }
+  const missing = [...allowed].filter((name) => !observed.has(name)).sort();
+  if (missing.length > 0) {
+    return reject(
+      'MISSING_EXPECTED_PACKAGE',
+      `expected vulnerable packages absent from the ${scope} audit: ${missing.join(', ')}`,
+    );
+  }
+  return null;
+}
+
+function checkViaReferences(vulnEntries, vulnNames, allowedPackages, scope) {
+  const allowed = new Set(allowedPackages);
+  for (const [name, entry] of vulnEntries) {
+    const via = arrayValue(entry, 'via');
+    if (via.length === 0) {
+      continue;
+    }
+    for (const reference of via) {
+      if (isPlainObject(reference)) {
+        continue;
+      }
+      if (!nonEmptyString(reference)) {
+        return reject(
+          'MALFORMED_VIA_REFERENCE',
+          `package '${name}' reports a malformed via reference: ${JSON.stringify(reference)}`,
+        );
+      }
+      if (!vulnNames.has(reference)) {
+        return reject(
+          'VIA_PACKAGE_NOT_ALLOWED',
+          `package '${name}' propagates through '${reference}', which is not part of the ${scope} vulnerable inventory`,
+        );
+      }
+      if (!allowed.has(reference)) {
+        return reject(
+          'VIA_PACKAGE_NOT_ALLOWED',
+          `package '${name}' propagates through '${reference}', which is not part of the approved ${scope} exception inventory`,
+        );
+      }
     }
   }
-  return unique;
+  return null;
 }
 
-function normaliseTime(value) {
-  if (value instanceof Date) return value.getTime();
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? Number.NaN : parsed;
+/**
+ * J2: the recorded severity is the only severity the exception may accept.
+ * Every other severity level must be zero (or absent) in the metadata totals,
+ * and the recorded level must equal the total vulnerable package count.
+ */
+function checkSeverityTotals(severityTotals, entryCount, scope, exception) {
+  const expected = entryCount;
+  const total = severityTotals.total;
+  if (!Number.isInteger(total) || total !== expected) {
+    return reject(
+      'SEVERITY_TOTALS_MISMATCH',
+      `metadata.vulnerabilities.total is ${String(total)}, but the audit reports ${expected} vulnerable packages for scope '${scope}'`,
+    );
   }
-  return Number.NaN;
+  const recorded = exception.severity;
+  const otherLevels = SEVERITY_LEVELS.filter((level) => level !== recorded);
+  const nonZeroOthers = otherLevels.filter((level) => Number(severityTotals[level] ?? 0) !== 0);
+  if (nonZeroOthers.length > 0) {
+    const detail = nonZeroOthers.map((level) => `${level}=${severityTotals[level]}`).join(', ');
+    return reject(
+      'SEVERITY_TOTALS_NONRECORDED',
+      `metadata reports counts for severity levels other than the recorded '${recorded}' (${detail}); the exception cannot accept them`,
+    );
+  }
+  const recordedCount = Number(severityTotals[recorded] ?? 0);
+  if (recordedCount !== expected) {
+    return reject(
+      'SEVERITY_TOTALS_MISMATCH',
+      `metadata.vulnerabilities.${recorded} is ${recordedCount}, but the audit reports ${expected} vulnerable packages for scope '${scope}'`,
+    );
+  }
+  return null;
 }
 
-function sortedList(items) {
-  return Array.from(items)
-    .map((item) => String(item))
-    .sort()
-    .join(', ');
+function checkExpiry(exception, now) {
+  const expiresAt = Date.parse(exception.expiryDate);
+  if (Number.isNaN(expiresAt)) {
+    return null;
+  }
+  return { expired: now.getTime() > expiresAt };
 }
 
-function describeError(err) {
-  if (!err) return 'unknown error';
-  if (err instanceof Error) return err.message;
-  return String(err);
+/**
+ * Pure policy evaluation for one npm audit report.
+ *
+ * Input:
+ *   - auditJson: raw stdout of `npm audit --json` (or `--omit=dev` for production)
+ *   - npmExitCode: npm process exit code (0 clean, 1 vulnerabilities found)
+ *   - scope: 'production' | 'bare'
+ *   - exception: parsed exception record
+ *   - now: injected timestamp (Date)
+ *   - installedVersions: injected node-path -> version map (optional; falls
+ *     back to audit.lockfile / audit.packages when omitted)
+ */
+export function evaluateAuditPolicy(input) {
+  const { auditJson, npmExitCode, scope, exception, now = new Date() } = input;
+  const baseObserved = {
+    scope,
+    npmExitCode,
+    totalVulnerabilities: null,
+    vulnerabilityPackages: [],
+    advisoryObjects: [],
+    exceptionId: isPlainObject(exception) ? exception.id ?? null : null,
+    exceptionScope: isPlainObject(exception) ? exception.scope ?? null : null,
+    exceptionExpiryDate: isPlainObject(exception) ? exception.expiryDate ?? null : null,
+    expired: false,
+    flaggedNodes: [],
+    installedVersionsByNode: {},
+  };
+
+  if (scope !== 'production' && scope !== 'bare') {
+    return reject('AUDIT_SCOPE_INVALID', `unsupported audit scope '${String(scope)}'`, baseObserved);
+  }
+
+  const schemaErrors = validateExceptionSchema(exception);
+  if (schemaErrors.length > 0) {
+    return reject('EXCEPTION_SCHEMA_INVALID', `exception schema invalid: ${schemaErrors.join('; ')}`, baseObserved);
+  }
+
+  const parsed = parseAuditJson(auditJson);
+  if (parsed.error) {
+    return reject('AUDIT_JSON_MALFORMED', parsed.error, baseObserved);
+  }
+  const audit = parsed.value;
+
+  if (npmExitCode !== 0 && npmExitCode !== 1) {
+    return reject('NPM_UNEXPECTED_EXIT_CODE', `npm audit exited with unexpected code ${String(npmExitCode)}`, baseObserved);
+  }
+
+  if (
+    npmExitCode !== 0 &&
+    (audit.error ||
+      audit.message ||
+      audit.code ||
+      !('auditReportVersion' in audit) ||
+      !isPlainObject(audit.metadata))
+  ) {
+    return reject(
+      'NPM_INFRASTRUCTURE_FAILURE',
+      `npm audit returned an infrastructure error body instead of a vulnerability report: ${String(audit.message ?? audit.code ?? audit.error ?? 'unknown error')}`,
+      baseObserved,
+    );
+  }
+
+  const metadata = isPlainObject(audit.metadata) ? audit.metadata : null;
+  const severityTotals = metadata && isPlainObject(metadata.vulnerabilities) ? metadata.vulnerabilities : null;
+  if (!metadata || !severityTotals || !('total' in severityTotals)) {
+    return reject('AUDIT_METADATA_MISSING', 'audit metadata.vulnerabilities.total is missing', baseObserved);
+  }
+
+  const vulnerabilities = isPlainObject(audit.vulnerabilities) ? audit.vulnerabilities : {};
+  const vulnEntries = Object.entries(vulnerabilities)
+    .filter(([, entry]) => isPlainObject(entry))
+    .map(([name, entry]) => [name, entry]);
+  const vulnNames = new Set(vulnEntries.map(([name]) => name));
+  const advisoryObjects = [];
+  for (const [, entry] of vulnEntries) {
+    const via = arrayValue(entry, 'via');
+    if (via.length === 0) {
+      continue;
+    }
+    for (const reference of via) {
+      if (isPlainObject(reference)) {
+        advisoryObjects.push(reference);
+      }
+    }
+  }
+  const uniqueAdvisories = new Map(advisoryObjects.map((advisory) => [String(advisory.source), advisory]));
+  const total = Number(severityTotals.total);
+  const totalIsZero = total === 0 && vulnEntries.length === 0 && advisoryObjects.length === 0;
+
+  if (totalIsZero && npmExitCode === 0) {
+    return accept(
+      'CLEAN_AUDIT',
+      `audit is clean for scope '${scope}' (0 vulnerable packages, 0 advisory objects)`,
+      { ...baseObserved, totalVulnerabilities: 0 },
+    );
+  }
+
+  const findingObserved = {
+    totalVulnerabilities: total,
+    vulnerabilityPackages: [...vulnNames].sort(),
+  };
+
+  // J1: a finding in a scope the exception does not govern is never accepted.
+  if (scope !== exception.scope) {
+    return reject(
+      'SCOPE_MISMATCH',
+      `audit scope is '${scope}', but the active exception governs scope '${exception.scope}'; findings outside the governed scope are never accepted`,
+      { ...baseObserved, ...findingObserved },
+    );
+  }
+
+  if (uniqueAdvisories.size !== 1) {
+    const count = uniqueAdvisories.size;
+    return reject(
+      count === 0 ? 'NO_CONCRETE_ADVISORY' : 'MULTIPLE_ADVISORY_OBJECTS',
+      count === 0
+        ? 'audit reports vulnerabilities but contains no concrete advisory object'
+        : `audit reports ${count} distinct advisory objects; the exception authorizes exactly 1`,
+      { ...baseObserved, ...findingObserved, advisoryObjects: [...uniqueAdvisories.values()] },
+    );
+  }
+
+  const advisory = [...uniqueAdvisories.values()][0];
+  const findingObservedWithAdvisory = { ...findingObserved, advisoryObjects: [advisory] };
+
+  const cveCheck = checkCveConsistency(advisory, exception);
+  if (cveCheck) {
+    return withObserved(cveCheck, findingObservedWithAdvisory);
+  }
+
+  const identityCheck = checkAdvisoryIdentity(advisory, exception);
+  if (identityCheck) {
+    return withObserved(identityCheck, findingObservedWithAdvisory);
+  }
+
+  const versionsByNode = resolveInstalledVersions(input.installedVersions, audit);
+  if (versionsByNode === null) {
+    return withObserved(
+      reject(
+        'INSTALLED_VERSION_UNRESOLVED',
+        'installed versions could not be resolved from the provided dependency tree',
+        baseObserved,
+      ),
+      findingObservedWithAdvisory,
+    );
+  }
+
+  const versionCheck = checkInstalledVersion(vulnEntries, exception, versionsByNode);
+  if (versionCheck.flaggedNodes === undefined) {
+    return withObserved(versionCheck, findingObservedWithAdvisory);
+  }
+
+  const allowedPackages = scope === 'production' ? exception.allowedProductionPackages : exception.allowedBarePackages;
+  if (!Array.isArray(allowedPackages) || allowedPackages.length === 0) {
+    return withObserved(
+      reject(
+        'EXCEPTION_SCHEMA_INVALID',
+        `no allowed package list for scope '${scope}'`,
+        baseObserved,
+      ),
+      findingObservedWithAdvisory,
+    );
+  }
+
+  const packageCheck = checkPackageSet(vulnEntries, allowedPackages, scope);
+  if (packageCheck) {
+    return withObserved(packageCheck, findingObservedWithAdvisory);
+  }
+
+  for (const [name, entry] of vulnEntries) {
+    if (!nonEmptyString(entry.severity) || entry.severity !== exception.severity) {
+      return withObserved(
+        reject(
+          'SEVERITY_MISMATCH',
+          `package '${name}' reports severity '${String(entry.severity)}', but the exception records '${exception.severity}'`,
+          baseObserved,
+        ),
+        findingObservedWithAdvisory,
+      );
+    }
+  }
+
+  const viaCheck = checkViaReferences(vulnEntries, vulnNames, allowedPackages, scope);
+  if (viaCheck) {
+    return withObserved(viaCheck, findingObservedWithAdvisory);
+  }
+
+  const totalsCheck = checkSeverityTotals(severityTotals, vulnEntries.length, scope, exception);
+  if (totalsCheck) {
+    return withObserved(totalsCheck, findingObservedWithAdvisory);
+  }
+
+  const expiry = checkExpiry(exception, now);
+  if (!expiry) {
+    return withObserved(
+      reject('EXCEPTION_SCHEMA_INVALID', `exception expiryDate '${exception.expiryDate}' is not a valid timestamp`, baseObserved),
+      findingObservedWithAdvisory,
+    );
+  }
+  if (expiry.expired) {
+    return withObserved(
+      reject(
+        'EXCEPTION_EXPIRED',
+        `exception expired at ${exception.expiryDate} (evaluated at ${now.toISOString()})`,
+        baseObserved,
+      ),
+      { ...findingObservedWithAdvisory, expired: true },
+    );
+  }
+
+  return accept(
+    'EXCEPTION_APPLIED',
+    `audit matches approved exception ${exception.id} for scope '${scope}': ${exception.advisory} (${exception.package} ${exception.affectedVersion}, severity ${exception.severity})`,
+    {
+      ...baseObserved,
+      ...findingObservedWithAdvisory,
+      flaggedNodes: versionCheck.flaggedNodes,
+      installedVersionsByNode: versionCheck.resolved,
+    },
+  );
 }
 
-function appendError(stderr, err) {
-  const message = describeError(err);
-  return stderr && stderr.length > 0 ? `${stderr}\n${message}` : message;
+/**
+ * CLI-level classification of one scope run. Infrastructure problems must
+ * surface as exit 2 (gate could not run), distinct from policy rejections
+ * (exit 1) and acceptance (exit 0).
+ */
+export function classifyScopeOutcome(runResult, evaluation) {
+  if (!runResult || runResult.ok === false) {
+    return 'infrastructure';
+  }
+  if (runResult.exitCode !== 0 && runResult.exitCode !== 1) {
+    return 'infrastructure';
+  }
+  if (typeof runResult.stdout !== 'string' || runResult.stdout.length === 0) {
+    return 'infrastructure';
+  }
+  if (!evaluation) {
+    return 'infrastructure';
+  }
+  return evaluation.accepted ? 'accepted' : 'policy-rejected';
 }
 
-function indentStderr(stderr) {
-  if (!stderr || stderr.trim().length === 0) return '';
-  return stderr
-    .split(/\r?\n/)
-    .map((line) => (line.length > 0 ? `  ${line}` : line))
-    .join('\n');
+function fileExists(candidate) {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
 }
 
-/* -------------------------------------------------------------------------
- * Entry point.
- * ------------------------------------------------------------------------- */
+/**
+ * K: bounded breadth-first search for npm-cli.js under rootDir. Shallow
+ * candidates are reached before deep ones; the directory visit count is
+ * capped at `cap` (default NPM_SEARCH_VISIT_CAP) so the walk always
+ * terminates, and a visited set guards against symlink cycles. A directory
+ * is accepted when it directly contains npm-cli.js (npm installs place it
+ * at <prefix>/node_modules/npm/bin/npm-cli.js, so bin/ is reached by the
+ * walk; node_modules directories are intentionally traversed).
+ */
+export function findNpmCli(rootDir, cap = NPM_SEARCH_VISIT_CAP) {
+  const queue = [rootDir];
+  const seen = new Set([rootDir]);
+  let visited = 0;
+  while (queue.length > 0) {
+    const dir = queue.shift();
+    if (++visited > cap) {
+      return null;
+    }
+    const candidate = path.join(dir, NPM_CLI_FILENAME);
+    if (fileExists(candidate)) {
+      return candidate;
+    }
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+        continue;
+      }
+      if (BFS_SKIP_DIRS.has(entry.name)) {
+        continue;
+      }
+      const childPath = path.join(dir, entry.name);
+      if (seen.has(childPath)) {
+        continue;
+      }
+      seen.add(childPath);
+      queue.push(childPath);
+    }
+  }
+  return null;
+}
 
-main().catch((err) => {
-  console.error(`Audit policy: an internal error occurred: ${describeError(err)}`);
-  process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-});
+function prefixCandidatePaths(env) {
+  const candidates = [path.join(path.dirname(process.execPath), NPM_CLI_RELATIVE)];
+  if (process.platform === 'win32') {
+    candidates.push(path.join('C:', 'Program Files', 'nodejs', NPM_CLI_RELATIVE));
+    candidates.push(path.join('C:', 'Program Files (x86)', 'nodejs', NPM_CLI_RELATIVE));
+    candidates.push(path.join('C:', 'ProgramData', 'nodejs', NPM_CLI_RELATIVE));
+    candidates.push(path.join('C:', 'nodejs', NPM_CLI_RELATIVE));
+    if (nonEmptyString(env?.PROGRAMFILES)) {
+      candidates.push(path.join(env.PROGRAMFILES, 'nodejs', NPM_CLI_RELATIVE));
+    }
+  } else {
+    if (nonEmptyString(env?.HOME)) {
+      candidates.push(path.join(env.HOME, '.npm-global', NPM_CLI_RELATIVE));
+      candidates.push(path.join(env.HOME, '.local', 'share', 'npm', NPM_CLI_RELATIVE));
+    }
+    candidates.push(path.join('/usr/local', NPM_CLI_RELATIVE));
+    candidates.push(path.join('/usr', NPM_CLI_RELATIVE));
+  }
+  return candidates;
+}
+
+function searchRootDirs(env) {
+  const roots = [];
+  if (nonEmptyString(env?.HOME)) {
+    roots.push(env.HOME);
+  }
+  if (process.platform === 'win32') {
+    const drive = nonEmptyString(env?.SystemDrive) ? env.SystemDrive : 'C:';
+    roots.push(path.join(drive, ''));
+    if (nonEmptyString(env?.PROGRAMFILES)) {
+      roots.push(env.PROGRAMFILES);
+    }
+    if (nonEmptyString(env?.['PROGRAMFILES(X86)'])) {
+      roots.push(env['PROGRAMFILES(X86)']);
+    }
+    if (nonEmptyString(env?.PROGRAMDATA)) {
+      roots.push(env.PROGRAMDATA);
+    }
+  } else {
+    roots.push('/usr', '/opt', '/');
+  }
+  return roots;
+}
+
+/**
+ * K: resolve the npm CLI file to spawn.
+ * Candidate order:
+ *   1. validated NPM_PATH (spaces allowed; must be an existing file; no shell)
+ *   2. validated process.env.npm_execpath (Windows only)
+ *   3. npm adjacent to process.execPath (Windows only)
+ *   4. common direct Windows/Linux prefix candidates (Windows only)
+ *   5. bounded breadth-first filesystem search (Windows only, final fallback)
+ * Non-Windows platforms resolve the 'npm' command from PATH; a spawn failure
+ * still surfaces as an infrastructure exit 2.
+ * Returns null only when no Windows candidate can be validated; the CLI maps
+ * that to EXIT_CONFIG_OR_INTERNAL = 2.
+ */
+export function resolveNpmPath(env = process.env) {
+  const explicit = env?.NPM_PATH;
+  if (typeof explicit === 'string' && explicit.length > 0) {
+    return fileExists(explicit) ? explicit : null;
+  }
+  if (process.platform !== 'win32') {
+    return 'npm';
+  }
+  const execPath = env?.npm_execpath;
+  if (typeof execPath === 'string' && execPath.length > 0 && fileExists(execPath)) {
+    return execPath;
+  }
+  for (const candidate of prefixCandidatePaths(env)) {
+    if (fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  for (const root of searchRootDirs(env)) {
+    const found = findNpmCli(root);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function resolveNpmCommand(npmPath) {
+  if (npmPath.toLowerCase().endsWith('.js')) {
+    return [process.execPath, npmPath];
+  }
+  return [npmPath];
+}
+
+export function runNpmAudit(input) {
+  const { npmPath, args, cwd = process.cwd(), timeoutMs = NPM_AUDIT_TIMEOUT_MS } = input;
+  return new Promise((resolve) => {
+    const [command, ...baseArgs] = resolveNpmCommand(npmPath);
+    let settled = false;
+    let stdout = '';
+    let stdoutTruncated = false;
+    const settle = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+    let child;
+    try {
+      child = spawn(command, [...baseArgs, ...args], {
+        env: process.env,
+        cwd,
+        timeout: timeoutMs,
+        killSignal: 'SIGTERM',
+      });
+    } catch (error) {
+      settle({ ok: false, error: 'spawn-failed', detail: String(error?.message ?? error) });
+      return;
+    }
+    child.stdout.on('data', (chunk) => {
+      if (stdoutTruncated) {
+        return;
+      }
+      stdout += chunk.toString('utf8');
+      if (stdout.length > NPM_STDOUT_LIMIT_BYTES) {
+        stdout = stdout.slice(0, NPM_STDOUT_LIMIT_BYTES);
+        stdoutTruncated = true;
+      }
+    });
+    child.on('error', (error) => {
+      settle({ ok: false, error: 'process-error', detail: String(error?.message ?? error) });
+    });
+    child.on('close', (code) => {
+      settle({ ok: true, exitCode: code, stdout });
+    });
+  });
+}
+
+function readExceptionFile(filePath) {
+  const text = fs.readFileSync(filePath, 'utf8');
+  const parsed = JSON.parse(text);
+  if (!isPlainObject(parsed)) {
+    throw new Error('exception file root must be a JSON object');
+  }
+  return parsed;
+}
+
+function readInstalledVersions(lockfilePath) {
+  const text = fs.readFileSync(lockfilePath, 'utf8');
+  const parsed = JSON.parse(text);
+  return collectLockfilePathVersions(parsed);
+}
+
+async function main() {
+  let exception;
+  try {
+    exception = readExceptionFile(path.join(projectRoot, 'config', 'audit-exceptions.json'));
+  } catch (error) {
+    console.error(`audit-policy: could not read exception configuration: ${error.message}`);
+    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+    return;
+  }
+
+  const schemaErrors = validateExceptionSchema(exception);
+  if (schemaErrors.length > 0) {
+    console.error('audit-policy: exception configuration is invalid:');
+    for (const error of schemaErrors) {
+      console.error(`  - ${error}`);
+    }
+    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+    return;
+  }
+
+  let installedVersions;
+  try {
+    installedVersions = readInstalledVersions(path.join(projectRoot, 'package-lock.json'));
+  } catch (error) {
+    console.error(`audit-policy: could not read dependency tree for installed versions: ${error.message}`);
+    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+    return;
+  }
+
+  const npmPath = resolveNpmPath();
+  if (!npmPath) {
+    console.error(
+      'audit-policy: could not resolve an npm CLI executable file. Set NPM_PATH to the absolute path of npm-cli.js (spaces are allowed; no shell is used).',
+    );
+    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+    return;
+  }
+
+  console.error(`audit-policy: node=${process.execPath}`);
+  console.error(`audit-policy: npm=${npmPath}`);
+  console.error(`audit-policy: exception=${exception.id} scope=${exception.scope} expires=${exception.expiryDate} owner=${exception.owner}`);
+
+  const now = new Date();
+  const outcomes = new Map();
+  for (const scope of SCOPES) {
+    const run = await runNpmAudit({ npmPath, args: NPM_AUDIT_ARGS[scope], cwd: projectRoot });
+    let outcome;
+    if (!run.ok) {
+      outcome = {
+        classification: 'infrastructure',
+        reasonCode: run.error === 'spawn-failed' ? 'NPM_SPAWN_FAILED' : 'NPM_EXECUTION_FAILED',
+        summary: `npm audit failed to execute for scope '${scope}' (${run.error}${run.detail ? `: ${run.detail}` : ''})`,
+      };
+    } else if (run.exitCode !== 0 && run.exitCode !== 1) {
+      outcome = {
+        classification: 'infrastructure',
+        reasonCode: 'NPM_UNEXPECTED_EXIT_CODE',
+        summary: `npm audit exited with unexpected code ${run.exitCode} for scope '${scope}'`,
+      };
+    } else if (run.stdout.length === 0) {
+      outcome = {
+        classification: 'infrastructure',
+        reasonCode: 'NPM_EMPTY_OUTPUT',
+        summary: `npm audit produced no output for scope '${scope}'`,
+      };
+    } else {
+      const evaluation = evaluateAuditPolicy({
+        auditJson: run.stdout,
+        npmExitCode: run.exitCode,
+        scope,
+        exception,
+        now,
+        installedVersions,
+      });
+      outcome = {
+        classification: classifyScopeOutcome(run, evaluation),
+        reasonCode: evaluation.reasonCode,
+        summary: evaluation.summary,
+        evaluation,
+      };
+    }
+    outcomes.set(scope, outcome);
+    console.error(`audit-policy: scope '${scope}' classified: ${outcome.classification} (${outcome.reasonCode})`);
+  }
+
+  const infrastructure = SCOPES.filter((scope) => outcomes.get(scope).classification === 'infrastructure');
+  if (infrastructure.length > 0) {
+    for (const scope of infrastructure) {
+      const outcome = outcomes.get(scope);
+      console.error(`audit-policy: infrastructure failure for scope '${scope}': ${outcome.reasonCode} - ${outcome.summary}`);
+    }
+    console.error('audit-policy: result: INFRASTRUCTURE FAILURE (exit 2). No policy decision was made; fix the gate environment and rerun.');
+    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+    return;
+  }
+
+  const rejected = SCOPES.filter((scope) => outcomes.get(scope).classification === 'policy-rejected');
+  if (rejected.length > 0) {
+    for (const scope of rejected) {
+      const outcome = outcomes.get(scope);
+      console.error(`audit-policy: policy rejected scope '${scope}': ${outcome.reasonCode} - ${outcome.summary}`);
+      const packages = outcome.evaluation?.observed?.vulnerabilityPackages ?? [];
+      console.error(
+        `audit-policy: raw audit package inventory for scope '${scope}': ${packages.length > 0 ? packages.join(', ') : '(none)'}`,
+      );
+    }
+    console.error('audit-policy: result: POLICY REJECTED (exit 1).');
+    process.exitCode = EXIT_POLICY_REJECTED;
+    return;
+  }
+
+  for (const scope of SCOPES) {
+    const outcome = outcomes.get(scope);
+    const evaluation = outcome.evaluation;
+    console.error(`audit-policy: ${evaluation.summary}`);
+    if (evaluation.reasonCode === 'EXCEPTION_APPLIED') {
+      for (const [node, version] of Object.entries(evaluation.observed.installedVersionsByNode ?? {})) {
+        console.error(`audit-policy: flagged node ${node} = ${version}`);
+      }
+      console.error(
+        `audit-policy: exception expires ${evaluation.observed.exceptionExpiryDate} (owner: ${exception.owner}); re-review per the exception's reviewInstructions - the gate fails closed after expiry or metadata drift`,
+      );
+    }
+  }
+  console.error('audit-policy: result: ACCEPTED (exit 0).');
+  process.exitCode = EXIT_SUCCESS;
+}
+
+// The module exports pure evaluation functions that tests import directly;
+// the CLI entry point must not run as a side effect of that import.
+const isMainModule = (() => {
+  try {
+    return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+  } catch {
+    return false;
+  }
+})();
+
+if (isMainModule) {
+  main().catch((error) => {
+    console.error(`audit-policy: internal error: ${error?.message ?? String(error)}`);
+    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+  });
+}

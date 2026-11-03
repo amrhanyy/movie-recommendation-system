@@ -1,588 +1,847 @@
 /**
- * Phase 14 — BRACES-EXC unit-test matrix.
+ * Phase 16B — audit-policy test matrix (DEP-AUDIT-005).
  *
- * Every fixture is a synthetic object derived from the approved live audit
- * shapes (`npm audit --omit=dev --json` = 5 production package entries;
- * `npm audit --json` = 7 bare package entries; one underlying advisory object
- * with npm audit source 1240992). No npm command and no registry call runs
- * inside this suite: `evaluateAuditPolicy` is a pure function and `now` is
- * injected.
+ * Supersedes the Phase 14 BRACES-EXC matrix. The policy under test is:
  *
- * Fail-closed orientation: the only states that accept are the exact approved
- * production shape, the exact approved bare shape, a genuinely clean audit, and
- * the exact-expiry boundary. Every other fixture must reject.
+ *   PRODUCTION CLEAN + ONE DEV-ONLY TEMPORARY EXCEPTION
+ *
+ * - production scope must be completely clean (CLEAN_AUDIT, never consumes
+ *   the exception),
+ * - bare scope may accept exactly the approved minimatch dev-only exception
+ *   (GHSA-g3hv-75wg-m249, source 1244012, minimatch 3.1.5, moderate,
+ *   cvssScore 0, cvssVector null, expiry 2026-11-16T23:59:59Z).
+ *
+ * Test numbering follows the Phase 16B prompt section L (1..32). Tests 33..38
+ * preserve still-valid behaviors from the Phase 14 BRACES-EXC matrix:
+ *
+ *   old 3/4/20   -> L1/L2 + exit-code-1-not-infrastructure assertion (L4)
+ *   old 5/26/27  -> L21 (including the exact-millisecond expiry boundary)
+ *   old 6/7      -> L13 / L11
+ *   old 8        -> L6
+ *   old 9/10     -> L8 / L9
+ *   old 11 + add -> L14 / L17 (severity parameterization, J2)
+ *   old 12/13    -> L20 / L19
+ *   old 14       -> L10
+ *   old 15       -> L23
+ *   old 16       -> L24
+ *   old 17       -> L26 (pure level) + end-to-end exit 2
+ *   old 18       -> L25 (spawn failure at the helper boundary)
+ *   old 19       -> 35 (registry/network error JSON)
+ *   old 21       -> 33 (CVE absent is tolerated)
+ *   old 22       -> 34 (conflicting CVE rejects)
+ *   old 23/24    -> L31 (via propagation + malformed via)
+ *   old 25       -> L22 (schema)
+ *   old 28/29    -> L3 (scope gate subsumes content/scope mismatches)
+ *   old 30       -> 36 (pure evaluation does not depend on process.env)
+ *   old add 2    -> L12 (advisory package name drift)
+ *
+ * Every fixture is synthetic (no npm process, no registry, no network). The
+ * end-to-end CLI tests spawn the gate with a fake `npm` script written to a
+ * temporary directory, so they are deterministic and offline as well.
+ * No local-machine path is hard-coded anywhere in this file (K12): the fake
+ * npm scripts live under os.tmpdir().
  */
+
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { evaluateAuditPolicy } from '../scripts/audit-policy.mjs';
+import {
+  classifyScopeOutcome,
+  evaluateAuditPolicy,
+  findNpmCli,
+  NPM_SEARCH_VISIT_CAP,
+  resolveNpmPath,
+  runNpmAudit,
+} from '../scripts/audit-policy.mjs';
 
-type AuditPolicyResult = {
-  accepted: boolean;
-  reasonCode: string;
-  summary: string;
-  observed: {
-    scope: 'production' | 'bare';
-    npmExitCode: number | null;
-    totalVulnerabilities: number | null;
-    vulnerabilityPackages: string[];
-    advisoryObjects: unknown[];
-    installedBracesVersion: string | null;
-    exceptionId: string | null;
-    exceptionExpiryDate: string | null;
-    expired: boolean | null;
-  };
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, '..');
+
+// ---------------------------------------------------------------------------
+// Approved exception fixture (mirrors config/audit-exceptions.json)
+// ---------------------------------------------------------------------------
+
+const BARE_VULN_PACKAGES = [
+  '@eslint-community/eslint-utils',
+  '@eslint/config-array',
+  '@eslint/eslintrc',
+  '@typescript-eslint/eslint-plugin',
+  '@typescript-eslint/parser',
+  '@typescript-eslint/type-utils',
+  '@typescript-eslint/utils',
+  'eslint',
+  'eslint-config-next',
+  'eslint-plugin-import',
+  'eslint-plugin-jsx-a11y',
+  'eslint-plugin-react',
+  'minimatch',
+];
+
+const BASE_EXCEPTION = {
+  id: 'MINIMATCH-DEV-EXC-2026-11-02',
+  scope: 'bare',
+  advisory: 'GHSA-g3hv-75wg-m249',
+  cve: 'CVE-2026-118764',
+  npmAuditSource: 1244012,
+  package: 'minimatch',
+  affectedVersion: '3.1.5',
+  severity: 'moderate',
+  cvssScore: 0,
+  cvssVector: null,
+  allowedProductionPackages: [],
+  allowedBarePackages: [...BARE_VULN_PACKAGES],
+  approvalDate: '2026-11-02',
+  expiryDate: '2026-11-16T23:59:59Z',
+  reviewCadenceDays: 7,
+  owner: 'repository-maintainer',
+  rationale:
+    'Phase 16B (DEP-AUDIT-005): production audit clean; glob removed; remaining minimatch copy dev-only; minimatch 11.0.1 incompatible with the current @eslint/eslintrc ESM default-import contract; temporary pending an upstream-compatible ESLint chain.',
+  reviewInstructions:
+    'Re-run both audits before expiry and at each 7-day review; remove the exception once the ESLint chain is minimatch 11.x compatible; the gate fails closed on expiry or metadata drift.',
+  upstreamLinks: [
+    'https://github.com/advisories/GHSA-g3hv-75wg-m249',
+    'https://github.com/minimatchjs/minimatch',
+  ],
 };
 
-// Fixtures always carry the exact parsed audit shape; only the two malformed
-// fixtures deliberately break it, and they cast inline. Declaring the field as
-// `AuditJson` (not a string union) keeps the mutation assertions well typed.
-type AuditPolicyInput = {
-  auditJson: AuditJson;
-  npmExitCode: number;
-  scope: 'production' | 'bare';
-  exception: Record<string, unknown>;
-  now: string | number | Date;
-  installedVersions?: Record<string, string> | null;
-};
+// A fixed evaluation instant inside the approved validity window.
+const NOW = new Date('2026-11-03T12:00:00Z');
+const INSTALLED_VERSIONS = { 'node_modules/minimatch': '3.1.5' };
 
-type Scope = 'production' | 'bare';
-
-type AuditSeverity = 'info' | 'low' | 'moderate' | 'high' | 'critical';
-
-type AdvisoryObject = {
+interface Advisory {
   source: number;
   name: string;
   dependency: string;
-  title: string;
   url: string;
-  severity: AuditSeverity;
-  cwe?: string[];
-  cvss: { score: number; vectorString: string };
+  severity: string;
+  cwe: string[];
+  cvss: { score: number; vectorString: string | null };
+  vulnerable_versions: string;
   range: string;
   cve?: string;
-};
+}
 
-type VulnerabilityEntry = {
+interface AuditEntry {
   name: string;
-  severity: AuditSeverity;
-  isDirect: boolean;
-  via: Array<string | AdvisoryObject>;
+  severity: string;
+  is_direct: boolean;
+  via: unknown[];
   effects: string[];
   range: string;
   nodes: string[];
-  fixAvailable?: Record<string, unknown> | false;
-};
+  fix_available: boolean;
+}
 
-type AuditJson = {
+interface AuditReport {
   auditReportVersion: number;
-  vulnerabilities: Record<string, VulnerabilityEntry>;
-  metadata: {
-    vulnerabilities: { info: number; low: number; moderate: number; high: number; critical: number; total: number };
-    dependencies: Record<string, number>;
+  vulnerabilities: Record<string, AuditEntry>;
+  metadata: { vulnerabilities: Record<string, number> };
+}
+
+interface BuildAuditOverrides {
+  packages?: string[];
+  advisory?: Advisory;
+  minimatchVia?: unknown[] | null;
+  extraEntries?: Record<string, AuditEntry>;
+  totals?: Record<string, number>;
+  nodes?: string[];
+}
+
+interface EvalResult {
+  accepted: boolean;
+  reasonCode: string;
+  summary: string;
+  observed: Record<string, unknown>;
+}
+
+interface CliRunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function makeException(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...BASE_EXCEPTION, ...(overrides ?? {}) };
+}
+
+function makeAdvisory(overrides: Partial<Advisory> = {}): Advisory {
+  return {
+    source: 1244012,
+    name: 'minimatch',
+    dependency: 'minimatch',
+    url: 'https://github.com/advisories/GHSA-g3hv-75wg-m249',
+    severity: 'moderate',
+    cwe: ['CWE-405'],
+    cvss: { score: 0, vectorString: null },
+    vulnerable_versions: '<11.0.1',
+    range: '<11.0.1',
+    cve: 'CVE-2026-118764',
+    ...(overrides ?? {}),
   };
+}
+
+const CLEAN_AUDIT: AuditReport = {
+  auditReportVersion: 2,
+  vulnerabilities: {},
+  metadata: {
+    vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 },
+  },
 };
 
 /**
- * The approved advisory object, as npm audit emits it inside the single `via`
- * array on the `braces` entry. Built as a factory so every fixture gets its own
- * copy: the drift tests mutate individual fields in place.
+ * Build a bare-scope audit report.
+ *
+ * - `packages`: vulnerable package names (minimatch carries the advisory object)
+ * - `minimatchVia`: via array for the minimatch entry (default: [advisory object])
+ * - `extraEntries`: additional/overriding vulnerability entries keyed by name
+ * - `totals`: override for metadata.vulnerabilities
  */
-function ADVISORY(): AdvisoryObject {
-  return {
-    source: 1240992,
-    name: 'braces',
-    dependency: 'braces',
-    title: 'braces vulnerable to stack-exhaustion denial of service through deeply nested patterns',
-    url: 'https://github.com/advisories/GHSA-vfj7-8cjw-p6xm',
-    severity: 'high',
-    cwe: ['CWE-674'],
-    cvss: {
-      score: 7.5,
-      vectorString: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H',
+function buildAudit(overrides: BuildAuditOverrides = {}): AuditReport {
+  const {
+    packages = BARE_VULN_PACKAGES,
+    advisory = makeAdvisory(),
+    minimatchVia = null,
+    extraEntries = {},
+    totals = null,
+    nodes = ['node_modules/minimatch'],
+  } = overrides;
+  const vulnerabilities: Record<string, AuditEntry> = {};
+  for (const name of packages) {
+    if (name === 'minimatch') {
+      vulnerabilities[name] = {
+        name,
+        severity: 'moderate',
+        is_direct: false,
+        via: minimatchVia ?? [advisory],
+        effects: [],
+        range: '<11.0.1',
+        nodes,
+        fix_available: true,
+      };
+    } else {
+      vulnerabilities[name] = {
+        name,
+        severity: 'moderate',
+        is_direct: false,
+        via: ['minimatch'],
+        effects: ['minimatch'],
+        range: '*',
+        nodes: [`node_modules/${name}`],
+        fix_available: true,
+      };
+    }
+  }
+  for (const [name, entry] of Object.entries(extraEntries)) {
+    vulnerabilities[name] = entry;
+  }
+  const entryCount = Object.keys(vulnerabilities).length;
+  const metadata = {
+    vulnerabilities: {
+      info: 0,
+      low: 0,
+      moderate: entryCount,
+      high: 0,
+      critical: 0,
+      total: entryCount,
+      ...(totals ?? {}),
     },
-    range: '<=3.0.3',
+  };
+  return { auditReportVersion: 2, vulnerabilities, metadata };
+}
+
+function makePropagatedEntry(name: string): AuditEntry {
+  return {
+    name,
+    severity: 'moderate',
+    is_direct: false,
+    via: ['minimatch'],
+    effects: ['minimatch'],
+    range: '*',
+    nodes: [`node_modules/${name}`],
+    fix_available: true,
   };
 }
 
-const INSTALLED_VERSIONS = { braces: '3.0.3' };
-
-const WITHIN_WINDOW = '2026-10-10T00:00:00Z';
-const EXPIRY = '2026-10-17T23:59:59Z';
-const ONE_MS_AFTER_EXPIRY = '2026-10-18T00:00:00Z';
-const MALFORMED_JSON = '{"auditReportVersion": 2, "vulnerabilities": {';
-
-type VulnerabilityEntries = Record<string, VulnerabilityEntry>;
-
-function productionPackageEntries(): VulnerabilityEntries {
-  return {
-    braces: {
-      name: 'braces',
-      severity: 'high',
-      isDirect: false,
-      via: [ADVISORY()],
-      effects: ['chokidar', 'micromatch'],
-      range: '*',
-      nodes: ['node_modules/braces'],
-      fixAvailable: { name: 'tailwindcss', version: '4.3.3', isSemVerMajor: true },
-    },
-    chokidar: {
-      name: 'chokidar',
-      severity: 'high',
-      isDirect: false,
-      via: ['braces'],
-      effects: ['tailwindcss'],
-      range: '2.0.0 - 3.6.0',
-      nodes: ['node_modules/chokidar'],
-      fixAvailable: { name: 'tailwindcss', version: '4.3.3', isSemVerMajor: true },
-    },
-    'fast-glob': {
-      name: 'fast-glob',
-      severity: 'high',
-      isDirect: false,
-      via: ['micromatch'],
-      effects: ['tailwindcss'],
-      range: '*',
-      nodes: ['node_modules/fast-glob'],
-      fixAvailable: { name: 'tailwindcss', version: '4.3.3', isSemVerMajor: true },
-    },
-    micromatch: {
-      name: 'micromatch',
-      severity: 'high',
-      isDirect: false,
-      via: ['braces'],
-      effects: ['fast-glob', 'tailwindcss'],
-      range: '>=0.2.0',
-      nodes: ['node_modules/micromatch'],
-      fixAvailable: { name: 'tailwindcss', version: '4.3.3', isSemVerMajor: true },
-    },
-    tailwindcss: {
-      name: 'tailwindcss',
-      severity: 'high',
-      isDirect: true,
-      via: ['chokidar', 'fast-glob', 'micromatch'],
-      effects: [],
-      range: '<=0.0.0-oxide-insiders.ff2c25f || 2.1.0-canary.1 - 3.4.19',
-      nodes: ['node_modules/tailwindcss'],
-      fixAvailable: { name: 'tailwindcss', version: '4.3.3', isSemVerMajor: true },
-    },
-  };
-}
-
-function barePackageEntries(): VulnerabilityEntries {
-  const entries = productionPackageEntries();
-  entries['@next/eslint-plugin-next'] = {
-    name: '@next/eslint-plugin-next',
-    severity: 'high',
-    isDirect: false,
-    via: ['fast-glob'],
-    effects: ['eslint-config-next'],
-    range: '>=14.3.0-canary.0',
-    nodes: ['node_modules/@next/eslint-plugin-next'],
-    fixAvailable: { name: 'eslint-config-next', version: '14.2.35', isSemVerMajor: true },
-  };
-  entries['eslint-config-next'] = {
-    name: 'eslint-config-next',
-    severity: 'high',
-    isDirect: true,
-    via: ['@next/eslint-plugin-next'],
-    effects: [],
-    range: '>=14.3.0-canary.0',
-    nodes: ['node_modules/eslint-config-next'],
-    fixAvailable: { name: 'eslint-config-next', version: '14.2.35', isSemVerMajor: true },
-  };
-  entries['fast-glob'].nodes = [
-    'node_modules/@next/eslint-plugin-next/node_modules/fast-glob',
-    'node_modules/fast-glob',
-  ];
-  return entries;
-}
-
-function productionAudit(): AuditJson {
-  return {
-    auditReportVersion: 2,
-    vulnerabilities: productionPackageEntries(),
-    metadata: {
-      vulnerabilities: { info: 0, low: 0, moderate: 0, high: 5, critical: 0, total: 5 },
-      dependencies: { prod: 407, dev: 409, optional: 92, peer: 9, peerOptional: 0, total: 854 },
-    },
-  };
-}
-
-function bareAudit(): AuditJson {
-  return {
-    auditReportVersion: 2,
-    vulnerabilities: barePackageEntries(),
-    metadata: {
-      vulnerabilities: { info: 0, low: 0, moderate: 0, high: 7, critical: 0, total: 7 },
-      dependencies: { prod: 407, dev: 409, optional: 92, peer: 9, peerOptional: 0, total: 854 },
-    },
-  };
-}
-
-function cleanAudit(): AuditJson {
-  return {
-    auditReportVersion: 2,
-    vulnerabilities: {},
-    metadata: {
-      vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 },
-      dependencies: { prod: 407, dev: 409, optional: 92, peer: 9, peerOptional: 0, total: 854 },
-    },
-  };
-}
-
-function productionFixture(): AuditPolicyInput {
-  return {
-    auditJson: productionAudit(),
-    npmExitCode: 1,
-    scope: 'production',
-    exception: APPROVED_EXCEPTION(),
-    now: WITHIN_WINDOW,
-    installedVersions: INSTALLED_VERSIONS,
-  };
-}
-
-function bareFixture(): AuditPolicyInput {
-  return {
-    auditJson: bareAudit(),
+function evaluate(auditJson: unknown, opts: Record<string, unknown> = {}) {
+  return evaluateAuditPolicy({
+    auditJson: typeof auditJson === 'string' ? auditJson : JSON.stringify(auditJson),
     npmExitCode: 1,
     scope: 'bare',
-    exception: APPROVED_EXCEPTION(),
-    now: WITHIN_WINDOW,
+    exception: makeException(),
+    now: NOW,
     installedVersions: INSTALLED_VERSIONS,
-  };
+    ...opts,
+  });
 }
 
-/**
- * The approved exception record. Built inline (not imported from the config
- * file) so each fixture can mutate a single field without touching the
- * on-disk record, and so the matrix stays self-describing.
- */
-function APPROVED_EXCEPTION() {
-  return {
-    schemaVersion: 1,
-    id: 'BRACES-EXC-2026-10-03-GHSA-vfj7-8cjw-p6xm',
-    advisory: 'GHSA-vfj7-8cjw-p6xm',
-    cve: 'CVE-2026-93687',
-    npmAuditSource: 1240992,
-    package: 'braces',
-    affectedVersion: '3.0.3',
-    severity: 'high',
-    cvssScore: 7.5,
-    cvssVector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H',
-    allowedProductionPackages: ['braces', 'chokidar', 'fast-glob', 'micromatch', 'tailwindcss'],
-    allowedBarePackages: [
-      '@next/eslint-plugin-next',
-      'braces',
-      'chokidar',
-      'eslint-config-next',
-      'fast-glob',
-      'micromatch',
-      'tailwindcss',
-    ],
-    owner: 'Repository maintainer',
-    rationale: 'No patched release exists; build-time-only exposure; temporary exception.',
-    approvalDate: '2026-10-03',
-    expiryDate: EXPIRY,
-    reviewCadenceDays: 7,
-    reviewInstructions: 'Run npm view braces dist-tags.latest every 7 days.',
-    upstreamLinks: [
-      'https://github.com/advisories/GHSA-vfj7-8cjw-p6xm',
-      'https://nvd.nist.gov/vuln/detail/CVE-2026-93687',
-      'https://github.com/micromatch/braces/issues/70',
-      'https://github.com/micromatch/braces/issues/73',
-      'https://github.com/micromatch/braces/pull/72',
-    ],
-  };
+function expectRejected(result: EvalResult, reasonCode: string): EvalResult {
+  expect(result.accepted).toBe(false);
+  expect(result.reasonCode).toBe(reasonCode);
+  return result;
 }
 
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
+// ---------------------------------------------------------------------------
+// Temporary-directory + fake-npm helpers (end-to-end CLI tests)
+// ---------------------------------------------------------------------------
+
+let tmpDir: string;
+
+function tmp(name: string): string {
+  return path.join(tmpDir, name);
 }
 
-/**
- * The concrete advisory object on the `braces` entry's `via` array. The union
- * member is always the object form in these fixtures, but the array's element
- * type admits strings too, so narrowing needs this helper.
- */
-function advisoryOf(fixture: AuditPolicyInput): AdvisoryObject {
-  const via = fixture.auditJson.vulnerabilities.braces.via;
-  if (typeof via[0] !== 'object' || via[0] === null) {
-    throw new Error('fixture invariant violated: braces.via[0] must be the advisory object');
+function writeFakeNpm(filename: string, script: string): string {
+  const file = tmp(filename);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, script, 'utf8');
+  return file;
+}
+
+const FAKE_CLEAN_SCRIPT = `
+const clean = {
+  auditReportVersion: 2,
+  vulnerabilities: {},
+  metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } },
+};
+process.stdout.write(JSON.stringify(clean));
+process.exit(0);
+`;
+
+function runCli(envOverrides: Record<string, string> = {}): Promise<CliRunResult> {
+  return new Promise<CliRunResult>((resolve) => {
+    execFile(
+      process.execPath,
+      ['scripts/audit-policy.mjs'],
+      {
+        cwd: projectRoot,
+        env: { ...process.env, ...envOverrides },
+        timeout: 30000,
+        maxBuffer: 16 * 1024 * 1024,
+        encoding: 'utf8',
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        const code = error ? (typeof error.code === 'number' ? error.code : -1) : 0;
+        resolve({ code, stdout, stderr });
+      },
+    );
+  });
+}
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p16b-policy-'));
+});
+
+afterEach(() => {
+  if (tmpDir && fs.existsSync(tmpDir)) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
-  return via[0];
-}
+});
 
-function evaluate(input: AuditPolicyInput) {
-  return evaluateAuditPolicy(input);
-}
+// ---------------------------------------------------------------------------
+// Section L behaviors 1..32 + preserved Phase 14 behaviors 33..38
+// ---------------------------------------------------------------------------
 
-function expectRejected(result: AuditPolicyResult, ...expectedCodes: string[]) {
-  expect(result.accepted, `expected rejection, got ${result.reasonCode}: ${result.summary}`).toBe(false);
-  if (expectedCodes.length > 0) {
-    expect(expectedCodes).toContain(result.reasonCode);
-  }
-}
-
-function expectAccepted(result: AuditPolicyResult, reasonCode?: string) {
-  expect(result.accepted, `expected acceptance, got ${result.reasonCode}: ${result.summary}`).toBe(true);
-  if (reasonCode) {
-    expect(result.reasonCode).toBe(reasonCode);
-  }
-}
-
-let savedEnv: Record<string, string | undefined>;
-
-describe('audit-policy — production positive path', () => {
-  beforeEach(() => {
-    savedEnv = { ...process.env };
-  });
-  afterEach(() => {
-    for (const key of Object.keys(process.env)) {
-      if (!(key in savedEnv)) delete process.env[key];
-    }
-    Object.assign(process.env, savedEnv);
+describe('audit-policy (Phase 16B) — pure evaluation', () => {
+  it('L1. accepts a clean production audit without using the exception', () => {
+    const result = evaluate(CLEAN_AUDIT, { npmExitCode: 0, scope: 'production' });
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('CLEAN_AUDIT');
+    expect(result.observed.totalVulnerabilities).toBe(0);
   });
 
-  it('1. accepts the exact 5-package production shape under the exception', () => {
-    expectAccepted(evaluate(productionFixture()), 'EXCEPTION_APPLIED');
+  it('L2. accepts a clean bare audit without using the exception', () => {
+    const result = evaluate(CLEAN_AUDIT, { npmExitCode: 0, scope: 'bare' });
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('CLEAN_AUDIT');
   });
 
-  it('2. accepts the exact 7-package bare shape under the exception', () => {
-    expectAccepted(evaluate(bareFixture()), 'EXCEPTION_APPLIED');
+  it('L3. rejects a production finding even when a bare exception exists (J1)', () => {
+    const result = evaluate(buildAudit(), { scope: 'production' });
+    expectRejected(result, 'SCOPE_MISMATCH');
+    // The raw inventory is still visible on rejection.
+    expect(result.observed.vulnerabilityPackages).toEqual([...BARE_VULN_PACKAGES].sort());
   });
 
-  it('3. accepts a clean production audit without using the exception', () => {
-    const result = evaluateAuditPolicy({
-      ...productionFixture(),
-      auditJson: cleanAudit(),
-      npmExitCode: 0,
-    });
-    expectAccepted(result, 'CLEAN_AUDIT');
-  });
-
-  it('4. accepts a clean bare audit without using the exception', () => {
-    const result = evaluateAuditPolicy({
-      ...bareFixture(),
-      auditJson: cleanAudit(),
-      npmExitCode: 0,
-    });
-    expectAccepted(result, 'CLEAN_AUDIT');
-  });
-
-  it('5. rejects an expired exception', () => {
-    const result = evaluateAuditPolicy({ ...productionFixture(), now: ONE_MS_AFTER_EXPIRY });
-    expectRejected(result, 'EXCEPTION_EXPIRED');
-    expect(result.summary).toContain('expired');
-  });
-
-  it('6. rejects a wrong GHSA identifier', () => {
-    const fixture = productionFixture();
-    advisoryOf(fixture).url =
-      'https://github.com/advisories/GHSA-aaaa-aaaa-aaaa-aaaa';
-    expectRejected(evaluate(fixture), 'ADVISORY_URL_MISMATCH');
-  });
-
-  it('7. rejects a wrong npm audit source id', () => {
-    const fixture = productionFixture();
-    advisoryOf(fixture).source = 999999;
-    expectRejected(evaluate(fixture), 'ADVISORY_SOURCE_MISMATCH');
-  });
-
-  it('8. rejects an additional concrete advisory object', () => {
-    const fixture = productionFixture();
-    const extra = ADVISORY();
-    extra.source = 5550001;
-    extra.url = 'https://github.com/advisories/GHSA-zzzz-zzzz-zzzz-zzzz';
-    fixture.auditJson.vulnerabilities['some-other-package'] = {
-      name: 'some-other-package',
-      severity: 'high',
-      isDirect: false,
-      via: [extra],
-      effects: [],
-      range: '*',
-      nodes: ['node_modules/some-other-package'],
-    };
-    expectRejected(evaluate(fixture), 'UNEXPECTED_VULNERABLE_PACKAGE', 'MULTIPLE_ADVISORY_OBJECTS');
-  });
-
-  it('9. rejects an additional vulnerable package entry', () => {
-    const fixture = productionFixture();
-    fixture.auditJson.vulnerabilities['extra-package'] = {
-      name: 'extra-package',
-      severity: 'high',
-      isDirect: false,
-      via: [ADVISORY()],
-      effects: [],
-      range: '*',
-      nodes: ['node_modules/extra-package'],
-    };
-    expectRejected(evaluate(fixture), 'UNEXPECTED_VULNERABLE_PACKAGE');
-  });
-
-  it('10. rejects a missing expected package entry', () => {
-    const fixture = productionFixture();
-    delete fixture.auditJson.vulnerabilities.tailwindcss;
-    fixture.auditJson.metadata.vulnerabilities.high = 4;
-    fixture.auditJson.metadata.vulnerabilities.total = 4;
-    expectRejected(evaluate(fixture), 'MISSING_EXPECTED_PACKAGE');
-  });
-
-  it('11. rejects severity drift to critical', () => {
-    const fixture = productionFixture();
-    advisoryOf(fixture).severity = 'critical';
-    fixture.auditJson.vulnerabilities.braces.severity = 'critical';
-    expectRejected(evaluate(fixture), 'ADVISORY_SEVERITY_MISMATCH');
-  });
-
-  it('12. rejects CVSS score drift', () => {
-    const fixture = productionFixture();
-    advisoryOf(fixture).cvss.score = 9.8;
-    expectRejected(evaluate(fixture), 'CVSS_SCORE_MISMATCH');
-  });
-
-  it('13. rejects CVSS vector drift', () => {
-    const fixture = productionFixture();
-    advisoryOf(fixture).cvss.vectorString =
-      'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N';
-    expectRejected(evaluate(fixture), 'CVSS_VECTOR_MISMATCH');
-  });
-
-  it('14. rejects installed braces version drift', () => {
-    const fixture = productionFixture();
-    fixture.installedVersions = { braces: '3.0.4' };
-    expectRejected(evaluate(fixture), 'INSTALLED_VERSION_DRIFT');
-  });
-
-  it('15. rejects malformed audit JSON', () => {
-    const fixture = productionFixture();
-    fixture.auditJson = MALFORMED_JSON as unknown as AuditJson;
-    expectRejected(evaluate(fixture), 'AUDIT_JSON_MALFORMED');
-  });
-
-  it('16. rejects empty stdout', () => {
-    const fixture = productionFixture();
-    fixture.auditJson = '' as unknown as AuditJson;
-    expectRejected(evaluate(fixture), 'AUDIT_JSON_MALFORMED');
-  });
-
-  it('17. rejects an npm exit code of 2', () => {
-    const fixture = productionFixture();
-    fixture.npmExitCode = 2;
-    expectRejected(evaluate(fixture), 'NPM_UNEXPECTED_EXIT_CODE');
-  });
-
-  it('18. rejects a spawn failure at the CLI helper boundary', async () => {
-    const { runNpmAudit } = await import('../scripts/audit-policy.mjs');
-    const result = await runNpmAudit({
-      npmPath: 'definitely-not-a-real-executable-9f3a',
-      args: ['audit', '--json'],
-      cwd: process.cwd(),
-    });
-    expect(result.ok).toBe(false);
-    expect(result.error).not.toBe(null);
-  });
-
-  it('19. rejects a registry/network error reported as JSON', () => {
-    const fixture = productionFixture();
-    fixture.auditJson = {
-      error: { code: 'EAI_AGAIN', summary: 'request to https://registry.npmjs.org/braces failed' },
-    } as unknown as AuditJson;
-    fixture.npmExitCode = 1;
-    expectRejected(evaluate(fixture), 'NPM_INFRASTRUCTURE_FAILURE');
-  });
-
-  it('20. evaluates a valid audit exit code 1 normally (not as an infrastructure failure)', () => {
-    const result = evaluate(productionFixture());
-    expectAccepted(result, 'EXCEPTION_APPLIED');
+  it('L4. accepts the exact approved bare exception', () => {
+    const result = evaluate(buildAudit());
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('EXCEPTION_APPLIED');
+    // Preserved from old test 20: a vulnerability exit code of 1 is a valid
+    // audit, not an infrastructure failure.
     expect(result.observed.npmExitCode).toBe(1);
+    expect(result.observed.totalVulnerabilities).toBe(13);
+    // F2: the flagged copy is resolved by its exact install node path.
+    expect(result.observed.flaggedNodes).toEqual(['node_modules/minimatch']);
+    expect(result.observed.installedVersionsByNode).toEqual({ 'node_modules/minimatch': '3.1.5' });
   });
 
-  it('21. accepts when the CVE is absent from the audit JSON but primary identifiers match', () => {
-    const fixture = productionFixture();
-    // The live npm audit JSON carries no CVE field on the advisory object; the
-    // exception record still records CVE-2026-93687.
-    expect(advisoryOf(fixture).cve).toBeUndefined();
-    expectAccepted(evaluate(fixture), 'EXCEPTION_APPLIED');
+  it('L5. rejects an unsupported audit scope', () => {
+    const result = evaluate(CLEAN_AUDIT, { scope: 'dev' });
+    expectRejected(result, 'AUDIT_SCOPE_INVALID');
   });
 
-  it('22. rejects an explicit conflicting CVE identifier', () => {
-    const fixture = productionFixture();
-    advisoryOf(fixture).cve = 'CVE-9999-00001';
-    expectRejected(evaluate(fixture), 'CVE_CONFLICT');
+  it('L6. rejects an additional concrete advisory object', () => {
+    const audit = buildAudit();
+    audit.vulnerabilities.minimatch.via.push(
+      makeAdvisory({ source: 1244013, url: 'https://github.com/advisories/GHSA-other-other-other' }),
+    );
+    const result = evaluate(audit);
+    expectRejected(result, 'MULTIPLE_ADVISORY_OBJECTS');
   });
 
-  it('23. rejects an unknown string "via" package reference', () => {
-    const fixture = productionFixture();
-    fixture.auditJson.vulnerabilities.chokidar.via = ['not-an-approved-package'];
-    expectRejected(evaluate(fixture), 'VIA_PACKAGE_NOT_ALLOWED');
+  it('L7. rejects findings that carry no concrete advisory object', () => {
+    const result = evaluate(buildAudit({ minimatchVia: ['minimatch'] }));
+    expectRejected(result, 'NO_CONCRETE_ADVISORY');
   });
 
-  it('24. rejects a malformed "via" entry', () => {
-    const fixture = productionFixture();
-    fixture.auditJson.vulnerabilities.braces.via = [42] as unknown as Array<string | AdvisoryObject>;
-    expectRejected(evaluate(fixture), 'VIA_MALFORMED');
-  });
-
-  it('25. rejects an exception schema missing owner or expiry', () => {
-    const fixture = productionFixture();
-    const noOwner = clone(fixture.exception);
-    delete noOwner.owner;
-    expectRejected(evaluateAuditPolicy({ ...fixture, exception: noOwner }), 'EXCEPTION_SCHEMA_INVALID');
-
-    const noExpiry = clone(fixture.exception);
-    delete noExpiry.expiryDate;
-    expectRejected(evaluateAuditPolicy({ ...fixture, exception: noExpiry }), 'EXCEPTION_SCHEMA_INVALID');
-  });
-
-  it('26. accepts at the exact expiry timestamp', () => {
-    const result = evaluateAuditPolicy({ ...productionFixture(), now: EXPIRY });
-    expectAccepted(result, 'EXCEPTION_APPLIED');
-    expect(result.observed.expired).toBe(false);
-  });
-
-  it('27. rejects one millisecond after expiry', () => {
-    const result = evaluateAuditPolicy({
-      ...productionFixture(),
-      now: '2026-10-17T23:59:59.001Z',
-    });
-    expectRejected(result, 'EXCEPTION_EXPIRED');
-  });
-
-  it('28. rejects the production shape evaluated as bare', () => {
-    const fixture = productionFixture();
-    const result = evaluateAuditPolicy({ ...fixture, scope: 'bare' as Scope });
-    expectRejected(result, 'MISSING_EXPECTED_PACKAGE');
-  });
-
-  it('29. rejects the bare shape evaluated as production', () => {
-    const fixture = bareFixture();
-    const result = evaluateAuditPolicy({ ...fixture, scope: 'production' as Scope });
+  it('L8. rejects an additional vulnerable package', () => {
+    const result = evaluate(
+      buildAudit({
+        extraEntries: { 'brace-expansion': makePropagatedEntry('brace-expansion') },
+        totals: { moderate: 14, total: 14 },
+      }),
+    );
     expectRejected(result, 'UNEXPECTED_VULNERABLE_PACKAGE');
+    expect(result.summary).toContain('brace-expansion');
   });
 
-  it('30. does not depend on process.env values', () => {
-    const baseline = evaluate(productionFixture());
-    process.env.AUDIT_POLICY_FORCE_PASS = '1';
-    process.env.BRACES_EXCEPTION_OVERRIDE = 'accept-everything';
-    const mutated = evaluate(productionFixture());
-    expect(mutated.accepted).toBe(baseline.accepted);
-    expect(mutated.reasonCode).toBe(baseline.reasonCode);
-    expect(mutated.summary).toBe(baseline.summary);
-    delete process.env.AUDIT_POLICY_FORCE_PASS;
-    delete process.env.BRACES_EXCEPTION_OVERRIDE;
+  it('L9. rejects a missing expected package', () => {
+    const packages = BARE_VULN_PACKAGES.filter((name) => name !== 'eslint');
+    const result = evaluate(buildAudit({ packages }));
+    expectRejected(result, 'MISSING_EXPECTED_PACKAGE');
+    expect(result.summary).toContain('eslint');
   });
 
-  it('additionally rejects a total/high metadata mismatch (extra hidden finding)', () => {
-    const fixture = productionFixture();
-    fixture.auditJson.metadata.vulnerabilities.critical = 1;
-    expectRejected(evaluate(fixture), 'SEVERITY_TOTALS_NONHIGH');
+  it('L10. rejects installed-version drift on the flagged node (F2)', () => {
+    const result = evaluate(buildAudit(), {
+      installedVersions: { 'node_modules/minimatch': '3.1.6' },
+    });
+    expectRejected(result, 'INSTALLED_VERSION_DRIFT');
+    expect(result.summary).toContain('3.1.6');
   });
 
-  it('additionally rejects a bare advisory whose package name drifts', () => {
-    const fixture = bareFixture();
-    advisoryOf(fixture).dependency = 'micromatch';
-    advisoryOf(fixture).name = 'micromatch';
-    expectRejected(evaluate(fixture), 'ADVISORY_PACKAGE_MISMATCH');
+  it('L11. rejects a wrong npm audit source id', () => {
+    const result = evaluate(buildAudit({ advisory: makeAdvisory({ source: 1244013 }) }));
+    expectRejected(result, 'ADVISORY_SOURCE_MISMATCH');
+  });
+
+  it('L12. rejects a wrong advisory package', () => {
+    const result = evaluate(buildAudit({ advisory: makeAdvisory({ dependency: 'glob' }) }));
+    expectRejected(result, 'ADVISORY_PACKAGE_MISMATCH');
+  });
+
+  it('L13. rejects advisory URL drift', () => {
+    const result = evaluate(
+      buildAudit({ advisory: makeAdvisory({ url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc' }) }),
+    );
+    expectRejected(result, 'ADVISORY_URL_MISMATCH');
+  });
+
+  it('L13b. rejects a wrong GHSA identifier recorded in the exception (preserved from old test 6)', () => {
+    const result = evaluate(buildAudit(), { exception: makeException({ advisory: 'GHSA-0000-0000-0000' }) });
+    expectRejected(result, 'ADVISORY_URL_MISMATCH');
+    expect(result.summary).toContain('GHSA-0000-0000-0000');
+  });
+
+  it('L14. rejects a severity escalation (high appearing alongside moderate)', () => {
+    const result = evaluate(buildAudit({ totals: { moderate: 12, high: 1, total: 13 } }));
+    expectRejected(result, 'SEVERITY_TOTALS_NONRECORDED');
+    expect(result.summary).toContain('high=1');
+  });
+
+  it('L15. rejects a lower or different recorded severity', () => {
+    // Advisory-object severity drift is caught by the identity check first.
+    const advisoryDrift = evaluate(buildAudit(), { exception: makeException({ severity: 'low' }) });
+    expectRejected(advisoryDrift, 'ADVISORY_SEVERITY_MISMATCH');
+    // With the advisory object matching, per-package entry severity drift is
+    // caught by the package-level severity loop.
+    const entryDrift = evaluate(
+      buildAudit({ advisory: makeAdvisory({ severity: 'low' }) }),
+      { exception: makeException({ severity: 'low' }) },
+    );
+    expectRejected(entryDrift, 'SEVERITY_MISMATCH');
+    expect(entryDrift.summary).toContain("reports severity 'moderate'");
+  });
+
+  it('L16. accepts exact moderate totals (moderate = total, all others zero)', () => {
+    const audit = buildAudit();
+    expect(audit.metadata.vulnerabilities).toEqual({
+      info: 0,
+      low: 0,
+      moderate: 13,
+      high: 0,
+      critical: 0,
+      total: 13,
+    });
+    const result = evaluate(audit);
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('EXCEPTION_APPLIED');
+  });
+
+  it('L17. rejects high and critical counts alongside moderate', () => {
+    const result = evaluate(buildAudit({ totals: { moderate: 11, high: 1, critical: 1, total: 13 } }));
+    expectRejected(result, 'SEVERITY_TOTALS_NONRECORDED');
+  });
+
+  it('L18. accepts an exact null CVSS vector (feed null, record null)', () => {
+    const advisory = makeAdvisory();
+    expect(advisory.cvss.vectorString).toBeNull();
+    const audit = buildAudit({ advisory });
+    const result = evaluate(audit);
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('EXCEPTION_APPLIED');
+  });
+
+  it('L19. rejects null-to-non-null CVSS vector drift (J3)', () => {
+    const result = evaluate(
+      buildAudit({
+        advisory: makeAdvisory({
+          cvss: { score: 0, vectorString: 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N' },
+        }),
+      }),
+    );
+    expectRejected(result, 'CVSS_VECTOR_MISMATCH');
+  });
+
+  it('L20. rejects CVSS score drift (exact npm-feed value, J4)', () => {
+    const result = evaluate(buildAudit({ advisory: makeAdvisory({ cvss: { score: 6.9, vectorString: null } }) }));
+    expectRejected(result, 'CVSS_SCORE_MISMATCH');
+  });
+
+  it('L20a. rejects an advisory range that does not include the recorded affected version', () => {
+    const result = evaluate(buildAudit({ advisory: makeAdvisory({ range: '>=11.0.1' }) }));
+    expectRejected(result, 'ADVISORY_RANGE_MISMATCH');
+  });
+
+  it('L21. rejects an expired exception, and accepts at the exact expiry instant', () => {
+    const expired = evaluate(buildAudit(), { now: new Date('2026-11-17T00:00:00Z') });
+    expectRejected(expired, 'EXCEPTION_EXPIRED');
+    expect(expired.observed.expired).toBe(true);
+
+    // Preserved from old tests 26/27: boundary is exact-millisecond.
+    const atExpiry = evaluate(buildAudit(), { now: new Date('2026-11-16T23:59:59.000Z') });
+    expect(atExpiry.accepted).toBe(true);
+    expect(atExpiry.reasonCode).toBe('EXCEPTION_APPLIED');
+
+    const afterExpiry = evaluate(buildAudit(), { now: new Date('2026-11-16T23:59:59.001Z') });
+    expectRejected(afterExpiry, 'EXCEPTION_EXPIRED');
+  });
+
+  it('L22. rejects malformed exception schemas (fail closed)', () => {
+    const noScope = makeException();
+    delete noScope.scope;
+    expectRejected(evaluate(buildAudit(), { exception: noScope }), 'EXCEPTION_SCHEMA_INVALID');
+
+    expectRejected(
+      evaluate(buildAudit(), { exception: makeException({ cvssVector: '' }) }),
+      'EXCEPTION_SCHEMA_INVALID',
+    );
+
+    expectRejected(
+      evaluate(buildAudit(), {
+        exception: makeException({ allowedBarePackages: [...BARE_VULN_PACKAGES, 'eslint'] }),
+      }),
+      'EXCEPTION_SCHEMA_INVALID',
+    );
+
+    expectRejected(
+      evaluate(buildAudit(), { exception: makeException({ upstreamLinks: ['not-a-url'] }) }),
+      'EXCEPTION_SCHEMA_INVALID',
+    );
+
+    // An exception that authorizes nothing in its governed scope is invalid.
+    expectRejected(
+      evaluate(buildAudit(), { exception: makeException({ allowedBarePackages: [] }) }),
+      'EXCEPTION_SCHEMA_INVALID',
+    );
+  });
+
+  it('L22b. rejects an exception missing owner or expiryDate (preserved from old test 25)', () => {
+    const noOwner = makeException();
+    delete noOwner.owner;
+    expectRejected(evaluate(buildAudit(), { exception: noOwner }), 'EXCEPTION_SCHEMA_INVALID');
+
+    const noExpiry = makeException();
+    delete noExpiry.expiryDate;
+    expectRejected(evaluate(buildAudit(), { exception: noExpiry }), 'EXCEPTION_SCHEMA_INVALID');
+  });
+
+  it('L23. rejects malformed audit JSON', () => {
+    expectRejected(evaluate('not json at all'), 'AUDIT_JSON_MALFORMED');
+    expectRejected(evaluate('[1, 2, 3]'), 'AUDIT_JSON_MALFORMED');
+  });
+
+  it('L24. classifies empty npm output as an infrastructure failure', () => {
+    expect(classifyScopeOutcome({ ok: true, exitCode: 1, stdout: '' }, null)).toBe('infrastructure');
+    expect(classifyScopeOutcome({ ok: true, exitCode: 0, stdout: '' }, null)).toBe('infrastructure');
+  });
+
+  it('L25. classifies an npm spawn failure as an infrastructure failure (helper boundary)', async () => {
+    const missing = path.join(tmpDir, 'no-such-npm');
+    const run = await runNpmAudit({ npmPath: missing, args: ['audit', '--json'], cwd: tmpDir });
+    expect(run.ok).toBe(false);
+    expect(classifyScopeOutcome(run, null)).toBe('infrastructure');
+  });
+
+  it('L26. classifies an unexpected npm exit code as an infrastructure failure', () => {
+    expect(classifyScopeOutcome({ ok: true, exitCode: 3, stdout: '{}' }, null)).toBe('infrastructure');
+    // Pure level (preserved from old test 17): the evaluator also rejects it.
+    expectRejected(evaluate(CLEAN_AUDIT, { npmExitCode: 2 }), 'NPM_UNEXPECTED_EXIT_CODE');
+  });
+
+  it('L26a. evaluates a valid audit reported with exit code 1 as a policy outcome (preserved from old test 20)', () => {
+    const run = { ok: true, exitCode: 1, stdout: JSON.stringify(buildAudit()) };
+    expect(classifyScopeOutcome(run, null)).toBe('infrastructure');
+    expect(classifyScopeOutcome(run, evaluate(buildAudit()))).toBe('accepted');
+  });
+
+  it('L29. resolves a validated NPM_PATH before every other candidate (K order)', () => {
+    const explicit = writeFakeNpm('explicit/fake-npm.js', FAKE_CLEAN_SCRIPT);
+    const execpath = writeFakeNpm('execpath/fake-npm.js', FAKE_CLEAN_SCRIPT);
+    const resolved = resolveNpmPath({
+      NODE_ENV: 'test',
+      NPM_PATH: explicit,
+      npm_execpath: execpath,
+      HOME: tmpDir,
+    });
+    expect(resolved).toBe(explicit);
+  });
+
+  it('L31a. a wrong advisory cannot be hidden by package propagation strings', () => {
+    // Every other entry propagates through 'minimatch' (string via refs), but
+    // the concrete advisory object carries the wrong source.
+    const result = evaluate(buildAudit({ advisory: makeAdvisory({ source: 1244013 }) }));
+    expectRejected(result, 'ADVISORY_SOURCE_MISMATCH');
+  });
+
+  it('L31b. rejects a via propagation to a package outside the inventory', () => {
+    const result = evaluate(
+      buildAudit({
+        extraEntries: {
+          eslint: { ...makePropagatedEntry('eslint'), via: ['minimatch', '@types/node'] },
+        },
+      }),
+    );
+    expectRejected(result, 'VIA_PACKAGE_NOT_ALLOWED');
+    expect(result.summary).toContain('@types/node');
+  });
+
+  it('L31c. rejects a malformed via reference', () => {
+    const result = evaluate(
+      buildAudit({
+        extraEntries: {
+          eslint: { ...makePropagatedEntry('eslint'), via: [123] },
+        },
+      }),
+    );
+    expectRejected(result, 'MALFORMED_VIA_REFERENCE');
+  });
+
+  it('L32. keeps the raw audit package inventory visible on rejection', () => {
+    const result = expectRejected(
+      evaluate(
+        buildAudit({
+          extraEntries: { 'left-pad': makePropagatedEntry('left-pad') },
+          totals: { moderate: 14, total: 14 },
+        }),
+      ),
+      'UNEXPECTED_VULNERABLE_PACKAGE',
+    );
+    expect(result.observed.vulnerabilityPackages).toEqual(
+      [...BARE_VULN_PACKAGES, 'left-pad'].sort(),
+    );
+  });
+
+  // --- preserved Phase 14 behaviors ---------------------------------------
+
+  it('33. accepts when the CVE is absent from the audit but primary identifiers match', () => {
+    const advisory = makeAdvisory();
+    delete advisory.cve;
+    const result = evaluate(buildAudit({ advisory }));
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('EXCEPTION_APPLIED');
+  });
+
+  it('34. rejects an explicit conflicting CVE identifier', () => {
+    const result = evaluate(buildAudit({ advisory: makeAdvisory({ cve: 'CVE-9999-0001' }) }));
+    expectRejected(result, 'CVE_MISMATCH');
+  });
+
+  it('35. rejects a registry/network error body reported as JSON with exit code 1', () => {
+    const result = evaluate(
+      JSON.stringify({ message: 'getaddrinfo ENOTFOUND registry.npmjs.org', code: 'ENOTFOUND' }),
+    );
+    expectRejected(result, 'NPM_INFRASTRUCTURE_FAILURE');
+  });
+
+  it('36. pure evaluation does not depend on process.env values', () => {
+    const audit = buildAudit();
+    const before = evaluate(audit);
+    const savedNpmPath = process.env.NPM_PATH;
+    const savedExecpath = process.env.npm_execpath;
+    process.env.NPM_PATH = path.join(tmpDir, 'does-not-exist', 'npm-cli.js');
+    process.env.npm_execpath = '';
+    try {
+      const after = evaluate(audit);
+      expect(after.accepted).toBe(before.accepted);
+      expect(after.reasonCode).toBe(before.reasonCode);
+    } finally {
+      if (savedNpmPath === undefined) {
+        delete process.env.NPM_PATH;
+      } else {
+        process.env.NPM_PATH = savedNpmPath;
+      }
+      if (savedExecpath === undefined) {
+        delete process.env.npm_execpath;
+      } else {
+        process.env.npm_execpath = savedExecpath;
+      }
+    }
+  });
+
+  it('37. rejects a production finding whose content is the bare inventory (scope gate first)', () => {
+    const result = evaluate(buildAudit(), { scope: 'production' });
+    expectRejected(result, 'SCOPE_MISMATCH');
+  });
+
+  it('38. rejects an audit metadata total that hides extra findings', () => {
+    // 13 packages reported, but metadata claims only 12 moderate.
+    const result = evaluate(buildAudit({ totals: { moderate: 12, total: 12 } }));
+    expectRejected(result, 'SEVERITY_TOTALS_MISMATCH');
+  });
+});
+
+describe('audit-policy (Phase 16B) — npm resolution (K)', () => {
+  it('L27. accepts an NPM_PATH containing spaces (validated file, no shell)', () => {
+    const spacedDir = path.join(os.tmpdir(), `p16b npm gate spaced ${Date.now()}`);
+    try {
+      fs.mkdirSync(spacedDir, { recursive: true });
+      const spacedNpm = path.join(spacedDir, 'fake npm with space.js');
+      fs.writeFileSync(spacedNpm, FAKE_CLEAN_SCRIPT, 'utf8');
+      expect(resolveNpmPath({ NODE_ENV: 'test', NPM_PATH: spacedNpm })).toBe(spacedNpm);
+      // A spaced path that does not exist is rejected, not passed through.
+      expect(resolveNpmPath({ NODE_ENV: 'test', NPM_PATH: path.join(spacedDir, 'missing spaced npm.js') })).toBeNull();
+    } finally {
+      fs.rmSync(spacedDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'L28. falls back to a validated npm_execpath before prefix candidates (Windows)',
+    () => {
+      const execpath = writeFakeNpm('execpath/fake-npm.js', FAKE_CLEAN_SCRIPT);
+      const resolved = resolveNpmPath({ NODE_ENV: 'test', NPM_PATH: '', npm_execpath: execpath, HOME: tmpDir });
+      expect(resolved).toBe(execpath);
+      // A non-existent npm_execpath is not accepted.
+      expect(
+        resolveNpmPath({
+          NODE_ENV: 'test',
+          NPM_PATH: '',
+          npm_execpath: path.join(tmpDir, 'missing', 'npm-cli.js'),
+          HOME: tmpDir,
+        }),
+      ).not.toBe(path.join(tmpDir, 'missing', 'npm-cli.js'));
+    },
+  );
+
+  it('L29b. a direct prefix candidate is returned without a filesystem walk (Windows)', () => {
+    if (process.platform !== 'win32') {
+      // Non-Windows platforms resolve the npm command from PATH.
+      expect(resolveNpmPath({ NODE_ENV: 'test' })).toBe('npm');
+      return;
+    }
+    const resolved = resolveNpmPath({ NODE_ENV: 'test', NPM_PATH: '', npm_execpath: '', HOME: tmpDir });
+    expect(resolved).toBeTruthy();
+    expect(resolved).toMatch(/node_modules[\\/]npm[\\/]bin[\\/]npm-cli\.js$/);
+    if (resolved === null) {
+      throw new Error('type narrowing: a string resolution is expected here');
+    }
+    expect(fs.statSync(resolved).isFile()).toBe(true);
+  });
+
+  it('L30a. BFS finds shallow candidates before deep ones', () => {
+    const root = tmp('bfs');
+    fs.mkdirSync(path.join(root, 'zzz'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'aaa', 'bbb'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'zzz', 'npm-cli.js'), '', 'utf8');
+    fs.writeFileSync(path.join(root, 'aaa', 'bbb', 'npm-cli.js'), '', 'utf8');
+    expect(findNpmCli(root)).toBe(path.join(root, 'zzz', 'npm-cli.js'));
+  });
+
+  it('L30b. the bounded BFS terminates at the visit cap', () => {
+    const root = tmp('bfs-bounded');
+    fs.mkdirSync(path.join(root, 'a', 'b', 'c', 'd'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'a', 'b', 'c', 'd', 'npm-cli.js'), '', 'utf8');
+    // No npm-cli.js within 1 or 2 directory visits.
+    expect(findNpmCli(root, 1)).toBeNull();
+    expect(findNpmCli(root, 2)).toBeNull();
+    // Within the default bound the CLI is still found (depth 4).
+    expect(findNpmCli(root)).toBe(path.join(root, 'a', 'b', 'c', 'd', 'npm-cli.js'));
+    expect(NPM_SEARCH_VISIT_CAP).toBe(1000);
+  });
+
+  it('L30c. a missing root terminates the BFS', () => {
+    expect(findNpmCli(path.join(tmpDir, 'absent'))).toBeNull();
+  });
+});
+
+describe('audit-policy (Phase 16B) — end-to-end CLI exit codes', () => {
+  it('L24b. exits 2 when npm produces no output (infrastructure)', async () => {
+    const fakeNpm = writeFakeNpm('bin/fake-npm-empty.js', 'process.exit(1);\n');
+    const result = await runCli({ NPM_PATH: fakeNpm });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('NPM_EMPTY_OUTPUT');
+    expect(result.stderr).toContain('INFRASTRUCTURE FAILURE');
+  });
+
+  it('L25b. exits 2 when the npm CLI cannot be resolved (spawn failure class)', async () => {
+    const missing = path.join(tmpDir, 'no-such-npm-cli.js');
+    const result = await runCli({ NPM_PATH: missing });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('could not resolve an npm CLI');
+  });
+
+  it('L26b. exits 2 when npm exits with an unexpected code', async () => {
+    const fakeNpm = writeFakeNpm('bin/fake-npm-exit3.js', 'process.exit(3);\n');
+    const result = await runCli({ NPM_PATH: fakeNpm });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('NPM_UNEXPECTED_EXIT_CODE');
+  });
+
+  it('L27b. runs both scopes and exits 0 with a spaced NPM_PATH (clean audits)', async () => {
+    const spacedDir = path.join(os.tmpdir(), `p16b npm gate e2e ${Date.now()}`);
+    try {
+      fs.mkdirSync(spacedDir, { recursive: true });
+      const spacedNpm = path.join(spacedDir, 'clean npm.js');
+      fs.writeFileSync(spacedNpm, FAKE_CLEAN_SCRIPT, 'utf8');
+      const result = await runCli({ NPM_PATH: spacedNpm });
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain('CLEAN_AUDIT');
+      expect(result.stderr).toContain('result: ACCEPTED (exit 0)');
+    } finally {
+      fs.rmSync(spacedDir, { recursive: true, force: true });
+    }
+  });
+
+  it('L32b. prints the raw package inventory and exits 1 on policy rejection', async () => {
+    const badAudit = buildAudit({
+      extraEntries: { 'left-pad': makePropagatedEntry('left-pad') },
+      totals: { moderate: 14, total: 14 },
+    });
+    const fakeNpm = writeFakeNpm(
+      'bin/fake-npm-bad.js',
+      `process.stdout.write(${JSON.stringify(JSON.stringify(badAudit))});\nprocess.exit(1);\n`,
+    );
+    const result = await runCli({ NPM_PATH: fakeNpm });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('raw audit package inventory');
+    expect(result.stderr).toContain('left-pad');
+    expect(result.stderr).toContain('POLICY REJECTED (exit 1)');
   });
 });
