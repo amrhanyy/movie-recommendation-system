@@ -136,13 +136,20 @@ describe('M4 gemini timeouts', () => {
     (FavoritesModel.find as ReturnType<typeof vi.fn>).mockReturnValue(mkChain([{ title: 'F', type: 'movie' }]));
     const { GET } = await import('@/app/api/ai-recommendations/route');
     const res = await GET(new NextRequest('http://localhost/api/ai-recommendations'));
-    expect(geminiCalls).toBeGreaterThan(0);
+    // Phase 20: a timeout is a single NON-retryable attempt; the provider maps
+    // the abort to AI_TIMEOUT. The route degrades to the TMDB popular fallback,
+    // but the stubbed TMDB lists are empty, so BOTH the provider and the
+    // fallback fail -- per spec section 8 the route then surfaces the
+    // normalized ORIGINAL AI error (504 / AI_TIMEOUT) rather than masking both
+    // failures as a 200 success.
+    expect(geminiCalls).toBe(1);
     expect(abortFired).toBe(true);
-    // Abort maps to AI_TIMEOUT -> 504 via the existing httpStatusForAIError path.
     expect(res.status).toBe(504);
     const body = await res.json();
+    expect(body.recommendations).toEqual([]);
+    expect(body.error).toBeTruthy();
     expect(body.code).toBe('AI_TIMEOUT');
-  });
+  }, 30000);
 
   it('hanging Gemini fetch aborts (signal fired) on ai-similar fallbacks', async () => {
     let geminiCalls = 0;
@@ -179,7 +186,7 @@ describe('M4 gemini timeouts', () => {
     const res = await GET(new NextRequest('http://localhost/api/movie/603/ai-similar'), {
       params: Promise.resolve({ id: '603' }),
     });
-    // Abort maps to AI_TIMEOUT inside getAISimilarMovies; the route's TMDB
+    // Abort maps to AI_TIMEOUT inside the shared provider (callGemini); the route's TMDB
     // fallbacks then engage (existing behavior). Assert the abort fired and
     // the route stayed on its handled path (no unhandled rejection).
     expect(geminiCalls).toBeGreaterThan(0);

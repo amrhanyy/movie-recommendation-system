@@ -764,14 +764,14 @@ describe('Phase 9 — AI-similar warm-hit enrichment volume correction', () => {
 
     // 2) Wrong Gemini method — a call to the trusted Gemini host that is not
     //    the approved POST /:generateContent shape is refused.  Exercised
-    //    directly against the guard: the route always sends POST to
-    //    GEMINI_GENERATE_URL, so a wrong-method Gemini call cannot originate
-    //    from the route and would not reach the guard through GET().
+    //    directly against the guard: the route always sends POST to the
+    //    Gemini generateContent URL, so a wrong-method Gemini call cannot
+    //    originate from the route and would not reach the guard through GET().
     {
       GET.__resetCache?.();
       const g = allowlist((url, method) => method === 'POST' && url.includes('generativelanguage.googleapis.com') && url.includes(':generateContent'));
       await expect(
-        g.mock('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash', { method: 'GET' })
+        g.mock('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite', { method: 'GET' })
       ).rejects.toThrow(/^DENIED:/);
       expect(g.denied.mock.calls.length).toBe(1);
       expect(String(g.denied.mock.calls[0][0]).toUpperCase()).not.toBe('POST');

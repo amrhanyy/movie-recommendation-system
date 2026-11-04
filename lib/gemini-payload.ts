@@ -1,4 +1,6 @@
 import {
+  AI_ERROR_CODES,
+  AIUpstreamError,
   MAX_CHAT_HISTORY_MESSAGES,
   MAX_CHAT_MESSAGE_LENGTH,
   MAX_CONTEXT_CHARS,
@@ -6,18 +8,36 @@ import {
   MAX_TMDB_OVERVIEW_CHARS,
 } from "./ai-security";
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TIMEOUT_MS = 15000;
-export const getGeminiModel = (): string =>
-  (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+
+const SAFE_GEMINI_MODEL_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/;
+
+export const isSafeGeminiModel = (value: string): boolean =>
+  value.length > 0 && value.length <= 200 && SAFE_GEMINI_MODEL_PATTERN.test(value);
+
+/**
+ * Resolve the Gemini model at CALL TIME: a trimmed GEMINI_MODEL env override,
+ * or the safe default. Blank/whitespace falls back to the default. An unsafe
+ * value (path traversal, query string, extra path segments, >200 chars) is a
+ * deployment-auth error, not a silently-wrong model — it throws AI_AUTH_ERROR
+ * so the route maps it to a 502 instead of calling an attacker-shaped URL.
+ */
+export const getGeminiModel = (): string => {
+  const candidate = (process.env.GEMINI_MODEL ?? '').trim();
+  if (!candidate) return DEFAULT_GEMINI_MODEL;
+  if (!isSafeGeminiModel(candidate)) {
+    throw new AIUpstreamError(
+      AI_ERROR_CODES.AI_AUTH_ERROR,
+      'GEMINI_MODEL contains unsafe characters'
+    );
+  }
+  return candidate;
+};
 
 export function buildGeminiGenerateUrl(model: string = getGeminiModel()): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 }
-
-// Static exports for backward compat; routes resolve dynamically via getGeminiModel().
-export const GEMINI_MODEL = DEFAULT_GEMINI_MODEL;
-export const GEMINI_GENERATE_URL = buildGeminiGenerateUrl(DEFAULT_GEMINI_MODEL);
 
 /** Trimmed server key accessor: never put the key in a URL or response body. */
 export function getGeminiApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
