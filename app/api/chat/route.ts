@@ -11,17 +11,11 @@ import { consumeQuota } from "@/lib/security/quota";
 import { trimCollection } from "@/lib/security/cardinality";
 import {
   AIUpstreamError,
-  extractGeminiText,
   httpStatusForAIError,
-  mapAIError,
-  redactSensitive,
 } from "@/lib/ai-security";
+import { callGemini } from "@/lib/gemini-provider";
 import {
-  boundChatHistory,
   buildChatGeminiPayload,
-  GEMINI_GENERATE_URL,
-  GEMINI_TIMEOUT_MS,
-  getGeminiApiKey,
   type ChatTurn,
 } from "@/lib/gemini-payload";
 
@@ -30,104 +24,6 @@ interface ChatHistoryDoc {
 }
 
 const MAX_MESSAGES_PER_CHAT = 200;
-
-/**
- * Safely read a bounded upstream error body for server-side logging only.
- * Redacted before logging; never returned to the client.
- */
-async function readUpstreamErrorBody(response: Response): Promise<string> {
-  try {
-    const text = await response.text();
-    return redactSensitive(text.slice(0, 500));
-  } catch {
-    return "<unreadable>";
-  }
-}
-
-/**
- * POST to a single Gemini model URL. Returns the model text or throws.
- * Logs upstream failures with status + redacted body to end 502 blindness.
- */
-async function postToGemini(
-  url: string,
-  apiKey: string,
-  currentMessage: string,
-  history: ChatTurn[]
-): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify(buildChatGeminiPayload(currentMessage, history)),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errorData = await readUpstreamErrorBody(response);
-      console.error("[Gemini Upstream Error]", response.status, errorData);
-      const mapped = mapAIError(response.status, false);
-      throw new AIUpstreamError(mapped.code, `AI service error ${mapped.httpStatus}`);
-    }
-
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch {
-      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
-    }
-
-    const content = extractGeminiText(raw);
-    if (!content) {
-      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
-    }
-    return content;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    if (error instanceof AIUpstreamError) throw error;
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new AIUpstreamError("AI_TIMEOUT", "AI request timed out");
-    }
-    console.error("AI request failed:", redactSensitive(String(error)));
-    throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable");
-  }
-}
-
-/**
- * Call Gemini with the API key in the x-goog-api-key header (no key in URL).
- * Single model (GEMINI_GENERATE_URL); 503s get one retry. Upstream bodies are
- * logged server-side (redacted) and never returned to the client.
- */
-async function getGeminiResponse(
-  currentMessage: string,
-  history: ChatTurn[]
-): Promise<string> {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
-  }
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await postToGemini(GEMINI_GENERATE_URL, apiKey, currentMessage, history);
-    } catch (error) {
-      const isUnavailable = error instanceof AIUpstreamError && error.code === "AI_UNAVAILABLE";
-      if (isUnavailable && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 1000));
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable");
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -200,8 +96,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const orderedHistory = boundChatHistory(history);
-    const responseText = await getGeminiResponse(message, orderedHistory);
+    const responseText = await callGemini({
+      payload: buildChatGeminiPayload(message, history),
+    });
 
     let persistedChatId = chatId || "";
     if (chatId) {

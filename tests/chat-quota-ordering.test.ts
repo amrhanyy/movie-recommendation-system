@@ -17,9 +17,10 @@ import { NextRequest } from 'next/server';
  *   -> consumeQuota (exactly once) -> Gemini -> persistence
  *
  * Network isolation: a deny-by-default global fetch guard is installed before
- * any route invocation. Only the exact GEMINI_GENERATE_URL (POST) is allowed,
- * and it serves a configured response only when the test opts in. Every other
- * URL or method throws immediately, so no real provider request can occur.
+ * any route invocation. Only the exact Gemini generateContent URL (POST,
+ * resolved call-time via buildGeminiGenerateUrl) is allowed, and it serves a
+ * configured response only when the test opts in. Every other URL or method
+ * throws immediately, so no real provider request can occur.
  */
 
 interface FetchedCall {
@@ -80,7 +81,10 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-const { GEMINI_GENERATE_URL: GEMINI_URL } = await import('@/lib/gemini-payload');
+const { buildGeminiGenerateUrl } = await import('@/lib/gemini-payload');
+// The provider resolves the model at call time (GEMINI_MODEL env override,
+// safe default otherwise); this is the exact URL the route will fetch.
+let GEMINI_URL = buildGeminiGenerateUrl();
 
 vi.mock('@/lib/mongodb', () => ({
   default: mocks.connectToMongoDB,
@@ -180,6 +184,8 @@ beforeEach(() => {
   mocks.chatLean.mockReset();
   mocks.chatFindOne.mockReturnValue({ lean: mocks.chatLean });
   vi.stubEnv('GOOGLE_API_KEY', 'test-placeholder-key');
+  vi.stubEnv('GEMINI_MODEL', '');
+  GEMINI_URL = buildGeminiGenerateUrl();
   vi.resetModules();
 });
 
@@ -439,7 +445,7 @@ describe('REL-001: quota denial and AI-failure contracts are unchanged', () => {
     expect(mocks.chatFindOneAndUpdate).not.toHaveBeenCalled();
   });
 
-  it('AI failure keeps the current error mapping and consumes quota once', async () => {
+  it('AI failure keeps the current error mapping and consumes quota once', { timeout: 15000 }, async () => {
     mocks.allowedGeminiUrls.push(GEMINI_URL);
     mocks.geminiResponseFactory.set(() =>
       new Response(JSON.stringify({ error: { message: 'upstream boom' } }), {
@@ -454,7 +460,7 @@ describe('REL-001: quota denial and AI-failure contracts are unchanged', () => {
     expect(body.error).toBe('Failed to process chat request');
     expect(body.code).toBe('AI_UNAVAILABLE');
     expect(mocks.consumeQuota).toHaveBeenCalledTimes(1);
-    expect(mocks.fetchCalls).toHaveLength(2); // one retry on AI_UNAVAILABLE
+    expect(mocks.fetchCalls).toHaveLength(3); // two retries within the 3-attempt budget (5xx is retryable)
     expect(mocks.chatCreate).not.toHaveBeenCalled();
     expect(mocks.chatFindOneAndUpdate).not.toHaveBeenCalled();
   });

@@ -5,34 +5,13 @@ import {
   RATE_LIMITS,
 } from '@/lib/security/rateLimit';
 import redisCache from '../../../../../lib/cache';
-import {
-  AIUpstreamError,
-  extractGeminiText,
-  mapAIError,
-  parseAISimilarMoviesFromText,
-  redactSensitive,
-} from '@/lib/ai-security';
-import {
-  buildSimilarMoviesGeminiPayload,
-  GEMINI_GENERATE_URL,
-  GEMINI_TIMEOUT_MS,
-  getGeminiApiKey,
-} from '@/lib/gemini-payload';
+import { parseAISimilarMoviesFromText } from '@/lib/ai-security';
+import { callGemini } from '@/lib/gemini-provider';
+import { buildSimilarMoviesGeminiPayload } from '@/lib/gemini-payload';
 import { buildCacheKey, CACHE_SCOPES } from '@/lib/cache-namespace';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const BASE_URL = 'https://api.themoviedb.org/3';
-
-interface MovieDetailItem {
-  title?: string;
-  release_date?: string;
-  overview?: string | null;
-  genres?: { name: string }[];
-  credits?: {
-    crew?: { job: string; name: string }[];
-    cast?: { name: string }[];
-  };
-}
 
 // W3-006c: bounded concurrency for TMDB enrichment (max 4 in-flight).
 // Inline copy of the established pool-4 pattern (ai-recommendations route):
@@ -44,96 +23,6 @@ interface AISuggestion {
   title: string;
   year?: string;
   reasoning?: string;
-}
-
-async function getAISimilarMovies(movieDetails: MovieDetailItem) {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
-  }
-
-  const maxRetries = 3;
-  let backoffTime = 1000;
-  let retryCount = 0;
-
-  while (retryCount < maxRetries) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-    try {
-      const response = await fetch(GEMINI_GENERATE_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify(buildSimilarMoviesGeminiPayload(movieDetails)),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        let errorData = '<unreadable>';
-        try {
-          errorData = redactSensitive((await response.text()).slice(0, 500));
-        } catch {
-          // ignore body-read failures
-        }
-        console.error('[Gemini Upstream Error]', response.status, errorData);
-        const mappedCode = mapAIError(response.status, false).code;
-        if (response.status === 503 || response.status === 429 || response.status >= 500) {
-          retryCount++;
-          if (retryCount < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, backoffTime));
-            backoffTime *= 2;
-            continue;
-          }
-        }
-        throw new AIUpstreamError(
-          mappedCode,
-          `AI service error ${response.status}`
-        );
-      }
-
-      let raw: unknown;
-      try {
-        raw = await response.json();
-      } catch {
-        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
-      }
-
-      const content = extractGeminiText(raw);
-      if (!content) {
-        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
-      }
-
-      const validated = parseAISimilarMoviesFromText(content);
-      if (!validated) {
-        throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
-      }
-      return validated.similar_movies;
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new AIUpstreamError("AI_TIMEOUT", "AI request timed out");
-      }
-      retryCount++;
-      if (
-        retryCount < maxRetries &&
-        error instanceof AIUpstreamError &&
-        error.code === "AI_UNAVAILABLE"
-      ) {
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-        backoffTime *= 2;
-      } else if (error instanceof AIUpstreamError) {
-        throw error;
-      } else {
-        console.error('AI request failed');
-        return [];
-      }
-    }
-  }
-  
-  throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable after retries");
 }
 
 export async function GET(
@@ -204,15 +93,19 @@ export async function GET(
         let aiSuggestions: AISuggestion[];
 
         try {
-          // Generate AI recommendations
-          const aiResults = await getAISimilarMovies(movieDetails);
+          // Generate AI recommendations via the shared provider (single
+          // 3-attempt budget, Retry-After respect, jittered backoff).
+          const geminiText = await callGemini({
+            payload: buildSimilarMoviesGeminiPayload(movieDetails),
+          });
+          const validated = parseAISimilarMoviesFromText(geminiText);
 
           // If AI returned empty results or very few, throw an error so we use TMDB fallback
-          if (!aiResults || aiResults.length < 4) {
+          if (!validated || validated.similar_movies.length < 4) {
             throw new Error('Insufficient AI results, falling back to TMDB');
           }
 
-          aiSuggestions = aiResults;
+          aiSuggestions = validated.similar_movies;
         } catch {
           console.error('AI similar fallback to TMDB');
 

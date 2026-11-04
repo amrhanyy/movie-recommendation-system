@@ -11,18 +11,12 @@ import { createHash } from 'node:crypto';
 import { consumeQuota } from '@/lib/security/quota';
 import {
   AIUpstreamError,
-  extractGeminiText,
+  AI_ERROR_CODES,
   httpStatusForAIError,
-  mapAIError,
   parseAIRecommendationsFromText,
-  redactSensitive,
 } from '@/lib/ai-security';
-import {
-  buildRecommendationGeminiPayload,
-  GEMINI_GENERATE_URL,
-  GEMINI_TIMEOUT_MS,
-  getGeminiApiKey,
-} from '@/lib/gemini-payload';
+import { callGemini } from '@/lib/gemini-provider';
+import { buildRecommendationGeminiPayload } from '@/lib/gemini-payload';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 
@@ -39,113 +33,6 @@ interface OwnedListItem {
 // REL-003: deterministic composite key so same-title items still order stably.
 function ownedSortKey(item: { type: string; title: string; id?: number }): string {
   return `${item.type}|${item.id ?? 'na'}|${item.title}`;
-}
-
-/** Safely read a bounded upstream error body for server logs (never client). */
-async function readUpstreamErrorBody(response: Response): Promise<string> {
-  try {
-    const text = await response.text();
-    return redactSensitive(text.slice(0, 500));
-  } catch {
-    return '<unreadable>';
-  }
-}
-
-async function postRecommendationsToGemini(
-  url: string,
-  apiKey: string,
-  preferences: string
-): Promise<Array<{ title: string; confidence?: number; "sub-genre"?: string; type: string }>> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(buildRecommendationGeminiPayload(preferences)),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const errorData = await readUpstreamErrorBody(response);
-      console.error('[Gemini Upstream Error]', response.status, errorData);
-      throw new AIUpstreamError(
-        mapAIError(response.status, false).code,
-        `AI service error ${response.status}`
-      );
-    }
-
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch {
-      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned invalid JSON");
-    }
-
-    const content = extractGeminiText(raw);
-    if (!content) {
-      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI returned no content");
-    }
-
-    const validated = parseAIRecommendationsFromText(content);
-    if (!validated) {
-      throw new AIUpstreamError("AI_INVALID_RESPONSE", "AI response failed validation");
-    }
-    return validated.recommendations;
-  } catch (error) {
-    if (error instanceof AIUpstreamError) throw error;
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new AIUpstreamError("AI_TIMEOUT", "AI request timed out");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-async function getAIRecommendations(preferences: string) {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    throw new AIUpstreamError("AI_UNAVAILABLE", "AI service is not configured");
-  }
-
-  const maxRetries = 3;
-  let retryCount = 0;
-  let backoffTime = 1000;
-
-  while (retryCount < maxRetries) {
-    try {
-      return await postRecommendationsToGemini(GEMINI_GENERATE_URL, apiKey, preferences);
-    } catch (error) {
-      if (
-        error instanceof AIUpstreamError &&
-        (error.code === "AI_UNAVAILABLE" || error.code === "AI_RATE_LIMITED")
-      ) {
-        retryCount++;
-        if (retryCount < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, backoffTime));
-          backoffTime *= 2;
-          continue;
-        }
-      }
-      if (error instanceof AIUpstreamError) {
-        throw error;
-      }
-      retryCount++;
-      if (retryCount < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-        backoffTime *= 2;
-      } else {
-        console.error('AI request failed');
-        return [];
-      }
-    }
-  }
-
-  throw new AIUpstreamError("AI_UNAVAILABLE", "AI service unavailable after retries");
 }
 
 export async function GET(request: NextRequest) {
@@ -261,11 +148,51 @@ export async function GET(request: NextRequest) {
       excludeTitles: Array.from(userContentTitles) // Explicitly tell AI what to exclude
     };
 
-    // Try to get AI recommendations
-    let aiSuggestions = await getAIRecommendations(JSON.stringify(preferences)) || [];
+    // Try to get AI recommendations via the shared provider. Only Gemini
+    // availability failures (503/other 5xx -> AI_UNAVAILABLE), rate limits
+    // (429 -> AI_RATE_LIMITED), and timeouts (-> AI_TIMEOUT) degrade to the
+    // TMDB popular fallback below (Phase 20 spec section 8). Any other error
+    // -- auth (AI_AUTH_ERROR), malformed upstream output
+    // (AI_INVALID_RESPONSE), or non-AI infrastructure errors (MongoDB,
+    // quota) -- is rethrown and normalized by the outer catch without a
+    // fallback.
+    let aiSuggestions: Array<{
+      title: string;
+      confidence?: number;
+      'sub-genre'?: string;
+      type: string;
+    }> = [];
+    let aiUsedTmdbFallback = false;
+    let originalAIError: AIUpstreamError | null = null;
+    try {
+      const geminiText = await callGemini({
+        payload: buildRecommendationGeminiPayload(JSON.stringify(preferences)),
+      });
+      const validated = parseAIRecommendationsFromText(geminiText);
+      if (validated) {
+        aiSuggestions = validated.recommendations;
+      }
+    } catch (error) {
+      if (
+        error instanceof AIUpstreamError &&
+        (error.code === AI_ERROR_CODES.AI_UNAVAILABLE ||
+          error.code === AI_ERROR_CODES.AI_RATE_LIMITED ||
+          error.code === AI_ERROR_CODES.AI_TIMEOUT)
+      ) {
+        originalAIError = error;
+        console.error(
+          '[AI Recommendations] Gemini ' +
+            error.code +
+            '; degrading to TMDB popular fallback'
+        );
+      } else {
+        throw error;
+      }
+    }
 
     // If AI recommendations failed, use a fallback with popular movies
     if (!Array.isArray(aiSuggestions) || aiSuggestions.length === 0) {
+      aiUsedTmdbFallback = true;
       try {
         // Get popular movies and TV shows as a fallback
         const [moviesResponse, tvResponse] = await Promise.all([
@@ -300,8 +227,22 @@ export async function GET(request: NextRequest) {
         console.error('Fallback recommendation error');
       }
 
-      // If still no recommendations, return empty with an error message
+      // If still no recommendations: when the fallback followed an eligible
+      // Gemini availability failure, surface the normalized ORIGINAL AI error
+      // instead of masking both failures as a 200 success (Phase 20 spec
+      // section 8). The 200 empty body remains only for the unparseable-output
+      // case, where no AIUpstreamError was thrown.
       if (aiSuggestions.length === 0) {
+        if (originalAIError) {
+          return NextResponse.json(
+            {
+              recommendations: [],
+              error: 'Failed to generate recommendations',
+              code: originalAIError.code
+            },
+            { status: httpStatusForAIError(originalAIError.code) }
+          );
+        }
         return NextResponse.json({
           recommendations: [],
           error: 'Unable to generate recommendations at this time. Please try again later.'
@@ -526,11 +467,18 @@ export async function GET(request: NextRequest) {
 
     const result = {
       recommendations: finalRecommendations,
-      needsContent: false
+      needsContent: false,
+      source: aiUsedTmdbFallback ? 'tmdb-fallback' : 'gemini',
+      degraded: aiUsedTmdbFallback
     };
 
-    // W3-006c: store in cache with TTL 3600s
-    redisCache.set(cacheKey, result, 3600).catch(() => {});
+    // W3-006c: store in cache with TTL 3600s. Degraded TMDB-fallback results
+    // are intentionally not cached: a transient provider outage must not pin
+    // popular movies in as personalized recommendations for up to an hour
+    // (same never-cache-degraded precedent as the ai-similar route).
+    if (!aiUsedTmdbFallback) {
+      redisCache.set(cacheKey, result, 3600).catch(() => {});
+    }
 
     return NextResponse.json(result);
   } catch (error) {
