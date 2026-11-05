@@ -52,6 +52,24 @@ vi.mock('mongoose', () => ({
   },
 }));
 
+// Controllable mock of the shared MongoDB helper used by the ready route.
+// Tests drive the attempt via mongoControl so a degraded result is always
+// attributable to a real (simulated) connection failure, never to a mock
+// artifact such as a missing mongoose.connect method.
+const mongoControl = vi.hoisted(() => ({ fail: true, calls: 0 }));
+
+vi.mock('@/lib/mongodb', () => ({
+  default: vi.fn(async () => {
+    mongoControl.calls += 1;
+    if (mongoControl.fail) {
+      throw new Error('connect failed');
+    }
+    // A successful helper connect establishes the driver connection.
+    (globalThis as Record<symbol, number>)[MOCK_READY_STATE] = 1;
+    return {};
+  }),
+}));
+
 const MOCK_READY_STATE = Symbol('mongoose.readyState');
 const MOCK_PING_FAIL = Symbol('mongoose.pingFail');
 
@@ -209,17 +227,37 @@ describe('R7 health endpoints', () => {
     expect(text).not.toContain('timeout');
   });
 
-  it('ready returns 503 degraded when mongoose is not connected (readyState != 1)', async () => {
+  it('ready returns 503 degraded when the connection attempt fails (readyState != 1)', async () => {
     vi.mocked(readyEnvCheck).mockReturnValue(true);
     (globalThis as Record<symbol, number>)[MOCK_READY_STATE] = 0;
     (globalThis as Record<symbol, boolean>)[MOCK_PING_FAIL] = false;
+    mongoControl.fail = true;
     const res = await readyGET(
       new Request('http://x/api/health/ready') as unknown as import('next/server').NextRequest
     );
+    // The route must attempt a connection before declaring disconnected.
+    expect(mongoControl.calls).toBe(1);
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.status).toBe('degraded');
     expect(body.components.database).toBe('disconnected');
+    // Driver error text never reaches the response.
+    expect(JSON.stringify(body)).not.toContain('connect failed');
+  });
+
+  it('ready returns 200 after connecting when mongoose starts disconnected (cold start)', async () => {
+    vi.mocked(readyEnvCheck).mockReturnValue(true);
+    (globalThis as Record<symbol, number>)[MOCK_READY_STATE] = 0;
+    (globalThis as Record<symbol, boolean>)[MOCK_PING_FAIL] = false;
+    mongoControl.fail = false;
+    const res = await readyGET(
+      new Request('http://x/api/health/ready') as unknown as import('next/server').NextRequest
+    );
+    expect(mongoControl.calls).toBe(1);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('ready');
+    expect(body.components.database).toBe('ready');
   });
 
   it('ready returns 503 when required configuration is invalid', async () => {
@@ -260,6 +298,10 @@ beforeEach(() => {
   // Default mongoose readiness state: connected, ping succeeds.
   (globalThis as Record<symbol, number>)[MOCK_READY_STATE] = 1;
   (globalThis as Record<symbol, boolean>)[MOCK_PING_FAIL] = false;
+  // Default helper behavior: the connection attempt fails; individual tests
+  // override this when they need a successful cold-start connect.
+  mongoControl.fail = true;
+  mongoControl.calls = 0;
 });
 
 // ---------------------------------------------------------------------------

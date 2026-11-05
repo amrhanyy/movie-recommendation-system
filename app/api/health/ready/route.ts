@@ -10,22 +10,34 @@ import { buildOperationalEvent } from "@/lib/operational-log";
  * Readiness reports whether the app is healthy enough to serve traffic:
  * - Core configuration must be valid (env schema).
  * - MongoDB must be reachable. A SHALLOW probe is used (no heavy queries):
- *   check `mongoose.connection.readyState === 1`, then `admin().ping()` with a
- *   strict 2-second timeout. This is the lightest reliable liveness signal.
+ *   if this function instance has not connected yet (module-local readyState
+ *   0 on a serverless cold start), the project's existing shared helper
+ *   (`lib/mongodb.ts`) is asked to connect first, bounded by a single 3-second
+ *   readiness budget; then `admin().ping()` runs with a strict 2-second cap.
+ *   Reusing the helper preserves its global connection/promise cache, so warm
+ *   instances never open a second connection and concurrent probes share one
+ *   in-flight attempt.
  *
  * Component states are generic only: ready / unavailable / disconnected.
  * The response NEVER contains connection strings, server names, credentials,
- * or internal error text.
+ * or internal error text. This route performs no URI/host logging.
  *
  * - 200 when config is valid AND the database probe succeeds.
- * - 503 (status "degraded") when config is valid but the DB is down.
- * - 503 (status "unavailable") when required configuration is invalid.
+ * - 503 (status "degraded") when config is valid but the DB is down, or the
+ *   bounded connection attempt fails or times out.
+ * - 503 (status "unavailable") when required configuration is invalid; the
+ *   database is not contacted on this path.
  *
  * Redis remains optional (memory fallback); its absence never affects readiness.
  */
 
 // Shallow ping timeout (ms). Never blocks readiness for long.
 const DB_PING_TIMEOUT_MS = 2000;
+
+// Whole database-probe budget (ms): the cold-start connect and the shallow
+// ping must both fit inside this window so a single readiness probe can never
+// hang a serverless invocation. Prefer 2-3 seconds.
+const DB_PROBE_TIMEOUT_MS = 3000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -44,8 +56,23 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 async function probeDatabase(): Promise<boolean> {
+  const deadline = Date.now() + DB_PROBE_TIMEOUT_MS;
   try {
     // readyState: 0 disconnected, 1 connected, 2 connecting, 3 disconnecting.
+    if (mongoose.connection.readyState !== 1) {
+      // Serverless cold start: a fresh function instance has a module-local
+      // readyState of 0 even when Atlas and other instances are healthy.
+      // Ask the existing shared helper to connect before declaring the
+      // database disconnected. The helper is imported lazily so a missing
+      // MONGODB_URI still reaches the config gate above instead of failing
+      // this module's evaluation. The helper caches both the connection and
+      // the in-flight promise on globalThis, so concurrent probes reuse one
+      // attempt and warm instances short-circuit.
+      const { default: connectToMongoDB } = await import("@/lib/mongodb");
+      await withTimeout(connectToMongoDB(), deadline - Date.now());
+    }
+    // A dropped or half-open connection is still not ready: re-check the
+    // actual driver state rather than trusting a cached handle.
     if (mongoose.connection.readyState !== 1) {
       return false;
     }
@@ -53,8 +80,12 @@ async function probeDatabase(): Promise<boolean> {
     if (!db) {
       return false;
     }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return false;
+    }
     // Shallow, bounded liveness check. No query, no data, no secrets.
-    await withTimeout(db.admin().ping(), DB_PING_TIMEOUT_MS);
+    await withTimeout(db.admin().ping(), Math.min(remaining, DB_PING_TIMEOUT_MS));
     return true;
   } catch {
     // Never surface stack/connection details; probe simply failed.
