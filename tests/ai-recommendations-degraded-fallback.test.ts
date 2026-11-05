@@ -284,7 +284,8 @@ describe('Phase 20 section 8: ai-recommendations TMDB degraded fallback', () => 
     expect(body.source).toBe('tmdb-fallback');
     expect(body.degraded).toBe(true);
     expect(body.recommendations).toHaveLength(6);
-    expect(geminiCalls).toBe(3);
+    // the provider exhausts its bounded 2-call 429 budget before degrading
+    expect(geminiCalls).toBe(2);
     expect(cacheMocks.set).not.toHaveBeenCalled();
   }, 30000);
 

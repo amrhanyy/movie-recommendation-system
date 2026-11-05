@@ -9,9 +9,12 @@
  * getGeminiModel() (GEMINI_MODEL env override honoured, safe default
  * gemini-3.5-flash-lite) — never a module-load static URL.
  *
- * Retry policy (single 3-attempt budget):
- *  - 5xx        -> retry, bounded exponential backoff + jitter
- *  - 429        -> retry (same budget), honouring a Retry-After header if present
+ * Retry policy (separate budgets per status class):
+ *  - 5xx        -> retry, bounded exponential backoff + jitter (3 calls max)
+ *  - 429        -> retry at most once, only when Retry-After is present,
+ *                 positive and no greater than five seconds (2 calls max;
+ *                 a 429 retires the sequence from the 5xx three-attempt path)
+ *                 (429 without a valid Retry-After is not retried at all)
  *  - timeout    -> NON-retryable (a hung upstream will not recover on retry)
  *  - 4xx(≠429)  -> NON-retryable (auth / bad request / retired model)
  *  - empty 200  -> NON-retryable (AI_INVALID_RESPONSE)
@@ -50,6 +53,8 @@ export interface GeminiCallOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Injectable jitter source in [0,1) for deterministic tests; defaults to Math.random. */
   rng?: () => number;
+  /** Injectable clock (ms) for HTTP-date Retry-After delay math; defaults to Date.now. */
+  clock?: () => number;
   /** Injectable structured logger; defaults to console. Every meta is redacted. */
   log?: (
     level: 'info' | 'warn' | 'error',
@@ -59,22 +64,36 @@ export interface GeminiCallOptions {
 }
 
 const MAX_ATTEMPTS = 3;
+const MAX_5XX_CALLS = MAX_ATTEMPTS;
+const MAX_429_CALLS = 2;
 const MAX_RETRY_AFTER_MS = 30_000;
+const BOUNDED_RETRY_AFTER_MS = 5_000;
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 2_500;
 
 /**
- * Parse a Retry-After header (integer seconds) into milliseconds.
- * Returns null when absent / empty / non-numeric / non-positive, and caps
- * absurd values at MAX_RETRY_AFTER_MS so a bad upstream cannot stall the app.
+ * Parse a Retry-After header into milliseconds.
+ *
+ * Numeric values (seconds) are rounded to ms and capped at MAX_RETRY_AFTER_MS
+ * so a bad upstream cannot stall the app. HTTP-date values are calculated
+ * relative to an injected clock (default Date.now) so the delay is
+ * deterministic in tests; only a positive delay is ever returned.
+ *
+ * Returns null when absent / empty / non-numeric / non-positive, at which
+ * point the caller does not retry.
  */
-export function parseRetryAfter(header: string | undefined): number | null {
+export function parseRetryAfter(header: string | null | undefined, clock: () => number = Date.now): number | null {
   if (header == null) return null;
   const value = header.trim();
   if (!value) return null;
   const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return null;
-  return Math.min(Math.round(seconds * 1000), MAX_RETRY_AFTER_MS);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.min(Math.round(seconds * 1000), MAX_RETRY_AFTER_MS);
+  }
+  // HTTP-date (RFC 1123 style, e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
+  const epoch = new Date(value).getTime();
+  if (!Number.isFinite(epoch) || epoch <= clock()) return null;
+  return Math.min(epoch - clock(), MAX_RETRY_AFTER_MS);
 }
 
 /**
@@ -109,6 +128,12 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
   }
 
   let lastError: AIUpstreamError | undefined;
+  // The injected clock for HTTP-date Retry-After delay math (defaults to native).
+  const clock = options.clock ?? Date.now;
+  // maxCalls: 5xx keeps the shared MAX_ATTEMPTS budget; a 429 retires the
+  // sequence into the 2-call budget (one bounded retry) before it is even
+  // entered, so a 429 never consumes all 3 attempts.
+  let maxCalls = MAX_5XX_CALLS;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
@@ -197,9 +222,16 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
       redactedBody = '';
     }
     const mapped = mapAIError(status, false);
-    const retryable = status === 429 || status >= 500;
+    const is429 = status === 429;
+    const retryable = status >= 500 || is429;
 
-    if (!retryable || attempt === MAX_ATTEMPTS) {
+    if (is429) {
+      // A 429 retires the sequence into a 2-call budget (one bounded retry):
+      // never the 503 three-attempt backoff path, at any position in the
+      // sequence.
+      maxCalls = MAX_429_CALLS;
+    }
+    if (!retryable || attempt >= maxCalls) {
       log('warn', 'gemini_call_failed', {
         model,
         attempt,
@@ -211,21 +243,53 @@ export async function callGemini(options: GeminiCallOptions): Promise<string> {
       throw new AIUpstreamError(mapped.code, `Gemini upstream error (${status})`);
     }
 
-    // Retryable (429 or 5xx) and attempts remain: wait, then loop.
-    const retryAfter = parseRetryAfter(response.headers.get('retry-after') ?? undefined);
-    const delay =
-      retryAfter ?? Math.min(Math.round(BASE_BACKOFF_MS * 2 ** (attempt - 1) + rng() * BASE_BACKOFF_MS), MAX_BACKOFF_MS);
-    lastError = new AIUpstreamError(mapped.code, `Gemini upstream error (${status})`);
+    // Retryable (5xx, or 429 within the bounded budget) and attempts remain:
+    // wait, then loop. A 429 is retried at most once, only when the
+    // Retry-After header is present, positive and no greater than five
+    // seconds.
+    let delay: number;
+    let retryAfterPresent = false;
+    if (is429) {
+      const retryAfter = parseRetryAfter(response.headers.get('retry-after'), clock);
+      retryAfterPresent = retryAfter != null;
+      if (!retryAfter || retryAfter > BOUNDED_RETRY_AFTER_MS) {
+        // No valid Retry-After: one provider call only, no sleep, no retry.
+        log('warn', 'gemini_call_retry_rejected', {
+          model,
+          attempt,
+          status,
+          code: mapped.code,
+          reason: 'rejected_retry_after',
+          retryDelayMs: 0,
+          retryAfterPresent: false,
+          maxAttempts: maxCalls,
+          body: redactedBody || undefined,
+        });
+        lastError = new AIUpstreamError(mapped.code, `Gemini upstream error (${status})`);
+        throw lastError;
+      }
+      delay = retryAfter;
+      await sleep(delay);
+    } else {
+      // 5xx: bounded exponential backoff + jitter (the MAX_5XX_CALLS budget),
+      // honouring a Retry-After header when present.
+      const retryAfter = parseRetryAfter(response.headers.get('retry-after'), clock);
+      retryAfterPresent = retryAfter != null;
+      delay =
+        retryAfter ?? Math.min(Math.round(BASE_BACKOFF_MS * 2 ** (attempt - 1) + rng() * BASE_BACKOFF_MS), MAX_BACKOFF_MS);
+      lastError = new AIUpstreamError(mapped.code, `Gemini upstream error (${status})`);
+      await sleep(delay);
+    }
     log('info', 'gemini_call_retry', {
       model,
       attempt,
       status,
       code: mapped.code,
-      delayMs: delay,
-      retryAfter: retryAfter != null,
+      retryDelayMs: delay,
+      retryAfterPresent,
+      maxAttempts: maxCalls,
       body: redactedBody || undefined,
     });
-    await sleep(delay);
   }
 
   throw lastError ?? new AIUpstreamError(AI_ERROR_CODES.AI_UNAVAILABLE, 'Gemini request failed');
