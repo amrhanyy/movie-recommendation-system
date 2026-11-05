@@ -14,8 +14,10 @@ import type { AIErrorCode } from '@/lib/ai-security';
  *    blank->default, invalid-model rejection (no static 'gemini-3.7-flash')
  *  - URL built from the RESOLVED model (call-time, not module-load)
  *  - Retry-After parsing (seconds -> ms, absent/invalid -> null, capped)
- *  - retry policy: 5xx max 3 attempts, 429 respects Retry-After (same 3-attempt
- *    budget), timeout and 4xx are NON-retryable, empty response non-retryable
+ *  - retry policy: 5xx max 3 attempts, 429 max 2 calls (one bounded Retry-After
+ *    <= 5s), 429 without a valid Retry-After is not retried at all, HTTP-date
+ *    is parsed against an injected clock, timeout and 4xx are NON-retryable,
+ *    empty response non-retryable
  *  - API-key gate: no fetch issued when the provider is unconfigured
  *  - structured observability metadata (redacted; API key never logged)
  *
@@ -28,6 +30,11 @@ type CallOpts = {
   fetchImpl?: unknown;
   sleep?: (ms: number) => Promise<void>;
   rng?: () => number;
+  /**
+   * Injectable clock (ms) used for HTTP-date Retry-After delay math.
+   * Defaults to Date.now.
+   */
+  clock?: () => number;
   log?: (level: 'info' | 'warn' | 'error', message: string, meta: Record<string, unknown>) => void;
 };
 
@@ -96,6 +103,7 @@ function call(opts: Partial<CallOpts> = {}) {
     fetchImpl: opts.fetchImpl,
     sleep: opts.sleep ?? noopSleep,
     rng: opts.rng ?? halfRng,
+    clock: opts.clock ?? Date.now,
     log: opts.log ?? silentLog,
   });
 }
@@ -259,15 +267,12 @@ describe('callGemini — retry policy', () => {
     expect((sleep.mock.calls[0] as number[])[0]).toBe(2000);
   });
 
-  it('uses bounded backoff on 429 when Retry-After is absent', async () => {
-    const fetchImpl = seqFetch([geminiStatus(429), gemini200('ok')]);
+  it('does NOT retry a 429 with no Retry-After (single fetch, no sleep)', async () => {
+    const fetchImpl = seqFetch([geminiStatus(429)]);
     const sleep = vi.fn(noopSleep);
-    await call({ fetchImpl, sleep: sleep as unknown as CallOpts['sleep'], rng: halfRng });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledTimes(1);
-    const delay = (sleep.mock.calls[0] as number[])[0];
-    expect(delay).toBeGreaterThanOrEqual(1);
-    expect(delay).toBeLessThanOrEqual(5000);
+    await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('does NOT retry a timeout (single fetch, AI_TIMEOUT)', async () => {
@@ -352,5 +357,215 @@ describe('callGemini — observability', () => {
     });
     const serialized = JSON.stringify(log.mock.calls);
     expect(serialized).not.toContain('test-key-should-never-leak');
+  });
+});
+
+// ==========================================================================
+// 7. callGemini — 429 bounded retry contract (PHASE 21 hardening)
+//
+// The corrected contract:
+//   - 429 with no Retry-After / malformed / zero / negative / > 5s : ONE call,
+//     no sleep, no retry, normalized as AI_RATE_LIMITED.
+//   - 429 with a valid Retry-After in (0, 5s] : ONE retry, exactly two calls
+//     maximum, sleep the header value.
+//   - HTTP-date Retry-After : parsed against the injected clock; only valid
+//     and <= 5s retried.
+//   - A 429 retires the call budget at 2 calls — never the 503 three-attempt
+//     path, from any position in the sequence.
+//   - 503 preserves the 3-attempt backoff budget (existing suite).
+//   - Timeout and all non-retryable statuses are unchanged (existing suite).
+// ==========================================================================
+describe('callGemini — 429 bounded retry contract', () => {
+  function retryAfter429(after: string): Response {
+    return geminiStatus(429, { 'Retry-After': after });
+  }
+
+  describe('429 without a valid Retry-After — single call, no sleep, no retry', () => {
+    it('429 with no Retry-After header: one fetch, no sleep, AI_RATE_LIMITED', async () => {
+      const fetchImpl = seqFetch([geminiStatus(429)]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('429 with a malformed Retry-After ("abc"): one fetch, no sleep, AI_RATE_LIMITED', async () => {
+      const fetchImpl = seqFetch([retryAfter429('abc')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('429 with a negative Retry-After ("-2.5"): one fetch, no sleep, AI_RATE_LIMITED', async () => {
+      const fetchImpl = seqFetch([retryAfter429('-2.5')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('429 with a zero Retry-After ("0"): one fetch, no sleep, AI_RATE_LIMITED', async () => {
+      const fetchImpl = seqFetch([retryAfter429('0')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('429 with a Retry-After of 6 seconds: one fetch, no sleep, no retry', async () => {
+      const fetchImpl = seqFetch([retryAfter429('6')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('429 with a Retry-After of 30 seconds: one fetch, no sleep, no retry', async () => {
+      const fetchImpl = seqFetch([retryAfter429('30')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('429 with a valid Retry-After (0, <= 5s) — exactly one retry', () => {
+    it('429 with Retry-After "1": two calls, one sleep of 1000ms, no third call', async () => {
+      const fetchImpl = seqFetch([retryAfter429('1'), retryAfter429('1')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect((sleep.mock.calls[0] as number[])[0]).toBe(1000);
+    });
+
+    it('429 with Retry-After "5": two calls, bounded retry accepted at the boundary', async () => {
+      const fetchImpl = seqFetch([retryAfter429('5'), retryAfter429('5')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect((sleep.mock.calls[0] as number[])[0]).toBe(5000);
+    });
+
+    it('429 with Retry-After "0.5": two calls, one sleep of 500ms, then succeeds', async () => {
+      const fetchImpl = seqFetch([retryAfter429('0.5'), gemini200('ok')]);
+      const sleep = vi.fn(noopSleep);
+      const out = await call({ fetchImpl, sleep });
+      expect(out).toBe('ok');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect((sleep.mock.calls[0] as number[])[0]).toBe(500);
+    });
+
+    it('503 with Retry-After "1" inside a 503 sequence using the backoff budget', async () => {
+      // 5xx status with a Retry-After header: the 5xx budget (3 calls) wins,
+      // the header is still honoured (analogous behaviour, unchanged).
+      const fetchImpl = seqFetch([geminiStatus(503, { 'Retry-After': '1' }), gemini200('ok')]);
+      const sleep = vi.fn(noopSleep);
+      const out = await call({ fetchImpl, sleep });
+      expect(out).toBe('ok');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect((sleep.mock.calls[0] as number[])[0]).toBeGreaterThan(0);
+    });
+  });
+
+  describe('429 with an HTTP-date Retry-After', () => {
+    const CLOCK = () => 1_762_384_800_000;
+
+    function futureDate(msFromNow: number): string {
+      return new Date(CLOCK() + msFromNow).toUTCString();
+    }
+
+    it('HTTP-date within 5 seconds: one bounded retry (sleep 1000ms)', async () => {
+      const fetchImpl = seqFetch([retryAfter429(futureDate(1000)), retryAfter429('1')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep, clock: CLOCK })).rejects.toMatchObject({
+        code: 'AI_RATE_LIMITED',
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect((sleep.mock.calls[0] as number[])[0]).toBe(1000);
+    });
+
+    it('HTTP-date greater than 5 seconds: one fetch, no sleep, no retry', async () => {
+      const fetchImpl = seqFetch([retryAfter429(futureDate(60_000)), retryAfter429('1')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep, clock: CLOCK })).rejects.toMatchObject({
+        code: 'AI_RATE_LIMITED',
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('429 retires the call budget — never the 5xx three-attempt path', () => {
+    it('first 429 (Retry-After 1) then 503: two calls, no three-attempt 503 sequence', async () => {
+      const fetchImpl = seqFetch([retryAfter429('1'), geminiStatus(503)]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_UNAVAILABLE' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('first 429 (Retry-After 1) then 429: exactly two calls, no third', async () => {
+      const fetchImpl = seqFetch([retryAfter429('1'), retryAfter429('1')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('first 429 (no Retry-After) then 503: exactly one call', async () => {
+      const fetchImpl = seqFetch([geminiStatus(429), geminiStatus(503)]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('503 then 429: two calls total, no third attempt', async () => {
+      const fetchImpl = seqFetch([geminiStatus(503), retryAfter429('1')]);
+      const sleep = vi.fn(noopSleep);
+      await expect(call({ fetchImpl, sleep })).rejects.toMatchObject({ code: 'AI_RATE_LIMITED' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('the 503 retry budget is preserved', () => {
+    it('two 503 then 200: three calls exactly (unchanged)', async () => {
+      const fetchImpl = seqFetch([geminiStatus(503), geminiStatus(503), gemini200('ok')]);
+      const out = await call({ fetchImpl });
+      expect(out).toBe('ok');
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    });
+
+    it('three 503: three calls, no fourth attempt (unchanged)', async () => {
+      const fetchImpl = seqFetch([geminiStatus(503), geminiStatus(503), geminiStatus(503)]);
+      await expect(call({ fetchImpl })).rejects.toThrowError(AIUpstreamError);
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('429 decision is logged with bounded metadata', () => {
+    it('logs retryDelayMs + retryAfterPresent and never a key or prompt', async () => {
+      const fetchImpl = seqFetch([retryAfter429('1'), gemini200('ok')]);
+      const sleep = vi.fn(noopSleep);
+      const log = vi.fn();
+      await call({ fetchImpl, log: log as unknown as CallOpts['log'], sleep });
+      expect(log).toHaveBeenCalled();
+      const metas = log.mock.calls.map((c) => c[2] as Record<string, unknown>);
+      const decision = metas.find(
+        (m) => (m.retryDelayMs as number) === 1000 && m.retryAfterPresent === true
+      );
+      expect(decision).toBeDefined();
+      const serialized = JSON.stringify(log.mock.calls);
+      expect(serialized).not.toContain('test-key-should-never-leak');
+      expect(serialized).not.toContain('"contents"');
+      expect(serialized).not.toContain('prompt');
+    });
   });
 });
