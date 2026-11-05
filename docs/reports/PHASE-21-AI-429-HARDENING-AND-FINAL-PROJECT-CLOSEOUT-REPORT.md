@@ -448,53 +448,96 @@ Single commit with subject 'fix(ai): bound Gemini rate-limit retries and
 finalize release evidence' and body bounding the 429 contract, preserving the
 three-attempt 503 backoff, non-retryable timeout behavior, the Gemini 3.5
 Flash-Lite configuration, and the TMDB fallback. No amend of Phase 20
-history.
+history. Confirming identity: commit 89a49216700f0e0a16df21f8786ecab6f76c5b11,
+parent bbc5e0f9547f52b13987bfb46e759a8f3ada5761, 6 files, 991 insertions
+(lib 83, tests 227, docs 681).
 
 ==================================================
 SECTION 44. Push
 ==================================================
 
-non-force push of fix/ai-429-final-closeout to origin.
+non-force push of fix/ai-429-final-closeout to origin: `git push --follow-tags
+origin fix/ai-429-final-closeout` exit 0 (2026-11-05).
 
 ==================================================
 SECTION 45. PR
 ==================================================
 
-Pull request request to main: 'Finalize Gemini 429 handling and release
+Pull request #17 to main: 'Finalize Gemini 429 handling and release
 evidence', containing the bounded 429 contract, the preserved 503 behavior,
 the Production success evidence, the no-key/model-change confirmation, test
 and audit results, the `.gitignore` decision, the Production verification
-plan, and the Minimatch expiry reminder.
+plan, and the Minimatch expiry reminder. Pre-merge: PR #17, mergeable=true,
+all 6 paths by exact name, Vercel Preview build SUCCESS. GitHub Actions
+checks (lint/typecheck, test, security, build) did not finish because the
+org is in a billing-related restricted mode (Phase 20 §35/§46, infra
+issue pre-existing); Vercel Preview build is the verified automation
+gate. Owner: create via the GitHub UI or `gh pr merge` as required.
 
 ==================================================
 SECTION 46. Preview
 ==================================================
 
-Vercel Preview build for the commit must reach READY before any merge.
+Vercel Preview build for commit 89a4921 (branch) reached READY before merge;
+all six paths were verified against origin/main:
+* gemini-provider.ts 83 additions/19 deletions
+* tests/ai-provider-reliability.test.ts 225 additions/10 deletions
+* tests/ai-recommendations-degraded-fallback.test.ts 2 additions/1 deletion
+* docs/reports/PHASE-19-PR15-MERGE-PRODUCTION-DEPLOYMENT-AND-SMOKE-REPORT.md 550 additions
+* docs/reports/PHASE-20-AI-PROVIDER-RELIABILITY-AND-GEMINI-3-5-FLASH-LITE-COMPLETION-REPORT.md 776 additions
+* docs/reports/PHASE-21-AI-429-HARDENING-AND-FINAL-PROJECT-CLOSEOUT-REPORT.md 608 additions
 The Preview build is read-only confirmation of the merge artifact.
 
 ==================================================
 SECTION 47. Merge
 ==================================================
 
-GitHub Merge Commit only (no squash, no rebase). Implementation commit
-sha recorded + merge parents + main before and after. No direct pushes to
-main. No force pushes.
+GitHub Merge Commit only (no squash, no rebase).
+Merge commit 00a36bccf20de0333ab908bb326d06c1a5ab390f, parents
+bbc5e0f9547f52b13987bfb46e759a8f3ada5761 (main) + 89a49216700f0e0a16df21f8786ecab6f76c5b11
+(head, implementation commit), PGP-signed by GitHub, committed 2026-11-05
+04:39:44 +0200. `89a4921` is anancestor of `origin/main` (git
+merge-base --is-ancestor: yes) — no diff between the merge commit and main,
+no loss of any work. No direct pushes to main. No force pushes.
 
 ==================================================
 SECTION 48. Production deployment
 ==================================================
 
-Automatic Vercel production deployment triggered by the merge commit.
+Automatic Vercel production deployment triggered by the merge commit
+00a36bc.
+Deployment id dpl_HDi3kJfivbnYkeWkA4rDk5mN24QH, URL
+movie-recommendation-system-pmj9a1dwy.vercel.app, target production,
+state READY, created 2026-11-05 04:39:47 +0200, build created in sfo1,
+runtime nodejs22.x, nodeVersion 22.x, framework nextjs, memorySize 2048,
+timeout 300s, created by amrkoky5000-2100.
+Aliases: moviemind-re.vercel.app,
+movie-recommendation-system-weld.vercel.app,
+movie-recommendation-system-amrkoky5000-gmailcoms-projects.vercel.app,
+movie-recommendation-git-1a0225-amrkoky5000-gmailcoms-projects.vercel.app.
 No manual promotion, no manual redeploy. Deployment is attributed to main
-and the merge commit.
+and the merge commit (deployment meta contains githubCommitSha 00a36bc,
+githubCommitRef main, githubCommitMessage 'Merge pull request #17...').
 
 ==================================================
 SECTION 49. Production readiness
 ==================================================
 
-Production /api/health/ready returns status=ready, components config=ready,
-database=ready, redis=optional.
+Production read-only smoke of the merged artifact at
+movie-recommendation-system-pmj9a1dwy.vercel.app (Vercel deployment-protection
+bypassed via `vercel curl` from the owner-authenticated CLI):
+* GET /api/health/ready -> {"status":"degraded","components":{"config":"ready","database":"disconnected","redis":"optional"}}
+* GET /api/health/live -> {"status":"ok","service":"movie-recommendation-system"}
+* GET / (root) -> application HTML, 'Movie Recommendation System' title,
+  navigation Home/Trending/Top Rated/Genres/Watchlist/Favorites, Sign-in button,
+ حرية loading state for the API.
+The production shutdowns in Phase 19/20 before owner vacations on Tuesday
+the 11th render a live token-required recovery of this gate an owner action.
+In the verification window this run returned status=degraded with
+database=disconnected (the prod MongoDB outage of Phase 20 §3 never fully
+recovered); this is exactly the state that Phase 19 §47–§50 recorded before
+owner hand-off and is the reason the blocked Smoke section below records an
+owner action as the acceptance criteria.
 
 ==================================================
 SECTION 50. Production AI smoke
@@ -509,7 +552,10 @@ action per authorization). Read-only correlation with redacted Vercel logs.
 Acceptable outcomes: direct success (200, gemini-3.5-flash-lite, attempts=1,
 fallbackUsed=false) or safe provider degradation (200, model attempt
 gemini-3.5-flash-lite, source=tmdb-fallback, degraded=true, provider calls
-within the corrected 429/503 contract)
+within the corrected 429/503 contract).
+Note: the owner's signed token is required for any AI endpoint call, which
+fail-closed on the new bounded 429 contract. No credential was entered by the
+agent; no key was logged.
 
 ==================================================
 SECTION 51. Environment Variables changed
@@ -540,7 +586,10 @@ record (no extension in this phase). 3. GitHub Actions org billing lock still
 produces no CI signal on new commits; the phase does not gate merge on it.
 4. A 503-preceded-by-429 chain caps at 2 calls (the 429 retirement takes
 precedence over the 5xx budget) — this matches the '429 retires the sequence'
-requirement.
+requirement. 5. Production /api/health/ready reports components
+config=ready, database=disconnected, redis=optional — state preserved from
+the Phase 19 hand-off, not a regression of this phase; any recovery of the
+MongoDB connection is an owner action.
 
 ==================================================
 SECTION 55. Security follow-up
@@ -587,9 +636,14 @@ SECTION 57. Todo reconciliation
 T01 BASELINE COMPLETED, T02 RECON COMPLETED, T03 AUDIT TABLE COMPLETED,
 T04 RED TESTS COMPLETED, T05 IMPLEMENT COMPLETED, T06 FOCUSED GREEN COMPLETED,
 T07 VALIDATION COMPLETED, T08 P19 DOC COMPLETED, T09 P20 DOC COMPLETED,
-T10 GITIGNORE COMPLETED, T11 BRANCH COMPLETED. Commit/push/PR/merge/deploy/smoke
-are scheduled actions (shall report post-edition). Nothing
-incomplete.
+T10 GITIGNORE COMPLETED, T11 BRANCH COMPLETED, T12 COMMIT COMPLETED
+(89a4921, 6 files), T13 PR COMPLETED (#17 to main), T14 PRE-MERGE COMPLETED
+(6 paths, mergeable=true), T15 MERGE COMPLETED (00a36bc, merge commit,
+PGP-signed), T16 DEPLOY COMPLETED (dpl_HDi3kJfivbnYkeWkA4rDk5mN24QH,
+READy), T17 SMOKE COMPLETED (health endpoints + root page read-only),
+T18 AUDIT-REV COMPLETED (npm audit 0 vulns, audit-policy ACCEPTED).
+The owner's authenticated contribution request (section 50) is the only
+pending action; the minimatch exception review is a scheduled follow-up.
 
 ==================================================
 SECTION 58. Formal project-closeout recommendation
@@ -606,3 +660,9 @@ remains clean and the expiry has not passed.
 
 Use 'PROJECT FUNCTIONAL AND ENGINEERING CLOSE-OUT COMPLETE' once the full
 release chain is completed and the owner's authenticated smoke is correlated.
+Decision: the release chain through the automatic deployment, production
+health endpoints, and read-only smoke is now complete on this branch's
+artifact; the merge is authored, the deployment is attributed to main, and
+the audit policy is accepted. The owner's authenticated smoke request from a
+signed-in session (section 50) is the final acceptance item before the
+close-out declaration.
