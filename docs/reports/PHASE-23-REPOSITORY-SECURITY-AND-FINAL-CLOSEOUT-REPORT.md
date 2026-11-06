@@ -4,10 +4,24 @@
 > **Runtime:** Node v24.21.0, npm 11.5.2 (the documented Phase 22 runtime).
 > **Hygiene:** This document contains no credentials, connection strings,
 > hostnames, ports, API keys, sessions, cookies, or user identities.
-> **Evidence boundary:** Sections 39-46 are authored as the release plan,
-> gates, and verification methods. Realized release values are recorded in
-> the Phase 23 session completion record, because this phase mandates exactly
-> two commits and forbids post-release history mutation.
+> **Evidence boundary (as originally committed):** Sections 39-46 were
+> authored as the release plan, gates, and verification methods. Realized
+> release values were originally recorded in the Phase 23 session completion
+> record, because the phase mandated exactly two commits and forbade
+> post-release history mutation; they are reconciled into sections 3, 46, and
+> 55 by the documentation-only corrective release noted below.
+>
+> **Correction record (documentation-only corrective release):** The
+> originally committed section 46 required new AI probes, contradicting the
+> Phase 23 instruction to use the existing owner-provided Production AI
+> evidence and not require a new AI request. That unauthorized requirement and
+> its dependent status claims have been corrected in this report; no code,
+> test, configuration, or runtime behavior changed. The two credential-free
+> requests that resulted from the incorrect wording returned HTTP 401 at the
+> application authentication boundary - they did not reach the AI provider, no
+> provider call or side effect occurred, and they are not acceptance evidence.
+> The realized release facts now recorded in sections 3, 46, and 55 were
+> verified before this correction and are unchanged by it.
 
 ## 1. Executive summary
 
@@ -27,8 +41,12 @@ two bounded workstreams:
 
 Supporting work: Phase 21 and Phase 22 reports reconciled, the approved Scope
 Change Proposal marked implemented, a 55-section completion report produced,
-and the full local gate set run green (sections 24-34). Release execution
-follows the single-PR chain in sections 39-46.
+the full local gate set run green (sections 24-34), and the single-PR release
+chain executed and verified (sections 39-46): two commits, one pull request, a
+GitHub Merge Commit, a Ready Production deployment, and readiness exact-ready
+3/3 sequentially. The approved owner-provided Production AI evidence is
+accepted as the authorized acceptance evidence, and no new AI request was
+required (section 46).
 
 ## 2. Owner authorization
 
@@ -57,11 +75,33 @@ and the Phase 22 concurrent-burst census warning.
 
 ## 3. Final status
 
-**As committed: LOCAL VALIDATION PASSED - RELEASE PENDING.** Every local gate
-is green (sections 24-34); release execution follows sections 39-46. Realized
-release values (PR, Preview, merge, production deployment, 3x readiness, AI
-evidence) are recorded in the Phase 23 session completion record, not in this
-committed document (two-commit mandate; no post-release history mutation).
+**PROJECT FUNCTIONAL AND ENGINEERING CLOSE-OUT COMPLETE.**
+
+Released, verified, and closed. Every local gate is green (sections 24-34)
+and every mandated release gate passed: one pull request merged by GitHub
+Merge Commit, Production deployment Ready, readiness exact-ready 3/3
+sequentially, raw audits zero for both scopes, clean-only policy active for
+both scopes with `CLEAN_AUDIT`, the exception file absent, and the MongoDB
+connection-log sanitization implemented and verified. The approved
+owner-provided Production AI evidence is accepted as the authorized
+acceptance evidence (section 46); no new AI request was required. The
+concurrent readiness census remains an operational warning only (section 21)
+and does not block close-out.
+
+Verified release record:
+
+- Implementation commit `caaa558`; documentation commit `c6828be`.
+- Pull Request `#21`; merge commit `646d328` - GitHub Merge Commit with two
+  parents.
+- Production deployment `bhducqz27`, status Ready.
+- Production and Bare audits: zero vulnerabilities; policy `CLEAN_AUDIT` for
+  both scopes; exception file absent.
+- Policy tests `64 / 64`; MongoDB logging tests `11 / 11`; full suite
+  `49 files / 615 tests / 0 failures`; coverage
+  `60.26 / 51.05 / 71.74 / 61.38`; build exit 0.
+- Readiness: exact-ready `3/3` sequentially.
+- Environment Variables changed: no; Deployment Settings changed: no;
+  Atlas changed: no.
 
 ## 4. Baseline
 
@@ -568,14 +608,38 @@ project is access-gated; flags are passed after `--`.
 
 ## 46. Production AI evidence
 
-Drive the production AI recommendation path with the request shape validated
-by the route handler (constructed from the handler's own input contract; no
-credential in the command) and expect a **2xx JSON** response with the
-route's documented success shape - no 429 and no 5xx. Also probe the
-movie-scoped similar-AI endpoint with a valid movie identifier under the same
-expectation. Record status codes and response shape only; no keys, tokens, or
-identities. This verifies the Phase 21 429-hardening path still functions on
-the new production deployment. A 429/5xx blocks the AI-evidence claim.
+Phase 23 made **no AI source change**: neither AI route, the AI provider
+configuration, nor the model selection was modified by this phase.
+
+**No new AI request was required.** The original Phase 23 instruction
+explicitly required using the existing owner-provided Production AI evidence
+and stated that Phase 23 does not change AI behavior. No AI recommendation or
+AI-similar request was therefore required as acceptance evidence.
+
+**Authorized acceptance evidence (owner-provided, Production):**
+
+| Field | Value |
+| --- | --- |
+| Route | `/api/ai-recommendations` |
+| HTTP status | `200` |
+| Event | `gemini_call_ok` |
+| Model | `gemini-3.5-flash-lite` |
+| Attempts | `1` |
+| Provider result | Direct Gemini success |
+| Fallback used | No |
+| Recommendations visibly rendered | Yes |
+
+The movie-scoped AI Similar path previously emitted a successful
+shared-provider log using the same approved model (`gemini-3.5-flash-lite`).
+
+Two credential-free requests were attempted because of the earlier, incorrect
+report wording that prescribed new AI probes. **Both returned HTTP `401` at
+the expected application authentication boundary.** These responses are
+authentication-boundary observations, **not AI provider failures**: the
+requests did not reach the AI provider, no AI quota was consumed, no
+application data was changed, and no provider call or side effect occurred
+from those probes; they are not required acceptance evidence. This section
+records no private data of any kind.
 
 ## 47. Environment Variables
 
@@ -621,6 +685,11 @@ rollback is configured, and no rollback was executed in this phase.
 6. **Sanitization scope** - the approved change covers the connection helper's
    logging only; no claim is made that every logging site in the repository
    was audited.
+7. **AI evidence reconciliation** - the two credential-free 401 responses are
+   authentication-boundary observations, not AI failures (section 46); no
+   provider call, quota use, application-data change, or other side effect
+   occurred. The approved owner-provided Production evidence is accepted and
+   no AI request remains pending.
 
 ## 52. External follow-ups
 
@@ -651,38 +720,43 @@ rollback is configured, and no rollback was executed in this phase.
 | Preview success required (U) | 42 |
 | Merge Commit only (V) | 43 |
 | Production deployment + 3x readiness (W, X) | 44, 45 |
-| Production AI evidence (Y) | 46 |
+| Production AI evidence: owner-provided evidence accepted; no new AI request required; 401 probes classified as authentication-boundary observations (Y) | 46 |
+| Documentation-only corrective reconciliation of AI evidence and formal close-out | 3, 46, 55 |
 | No env / settings / Atlas changes (N) | 47, 48, 49 |
 | Full local validation (P) | 24-34 |
 | 55-section report; no credentials/hostnames/identities (Q) | all sections; hygiene banner; Z |
 
 ## 54. Todo reconciliation
 
-The execution todo list mirrors the instruction sections A-Z. At commit time:
+The execution todo list mirrors the instruction sections A-Z. Final state:
 
 - **Complete:** authorization/scope analysis; branch and baseline; ccb3690
   read-only analysis and reconstruction decision; both RED runs; both
   implementations; both GREEN runs; focused, readiness, policy, and MongoDB
   test gates; typecheck; lint; full suite; coverage; build; raw audits; live
-  policy; secret scan; diff check; scope control; all reconciliations; this
-  report.
-- **In progress / pending:** commit staging and the two commits (39, S), push
-  and PR (40-41), Preview (42), merge (43), production deployment and
-  verification (44-46), close-out rule (55), final self-review and printout.
-  Their execution and final reconciliation are recorded in the Phase 23
-  session completion record.
+  policy; secret scan; diff check; scope control; all report reconciliations;
+  both logical commits; push; pull request; Preview gate; Merge Commit;
+  Production deployment; 3/3 exact-ready readiness; the eight-check
+  Production smoke; close-out rule evaluation; final self-review and
+  printout; and this documentation-only corrective reconciliation.
+- **Corrected:** the originally committed wording of section 46 (which
+  unauthorized new AI probes) and its dependent status claims, reconciled by
+  the documentation-only corrective release recorded in the correction note
+  above.
 
-No todo item is removed to appear complete; unfinished release items remain
-explicitly listed.
+No todo item is removed to appear complete; every item is either complete or
+explicitly corrected and re-verified.
 
 ## 55. Formal project-closeout recommendation
 
-**Recommendation: PROCEED with the release per sections 39-46.** All local
-requirements are met and evidenced (sections 24-34). Formal project close-out
-- acceptance of all 55 requirements including realized release evidence -
-is recommended in the session completion record **only after** the Preview
-gate, the Merge Commit with two parents, the new Production Ready
-deployment, the 3/3 exact-ready production check, and the Production AI
-evidence all pass. Until then the committed status in section 3 remains
-**LOCAL VALIDATION PASSED - RELEASE PENDING**, and no closure is claimed
-here.
+**Recommendation: PROJECT FUNCTIONAL AND ENGINEERING CLOSE-OUT COMPLETE.**
+
+All ten formal close-out conditions are satisfied: both commits merged; the
+Production deployment Ready; both raw audits zero; the policy reports
+`CLEAN_AUDIT` for both scopes; the exception file absent; MongoDB raw-error
+logging sanitized; the mandatory Production smoke passed; readiness passed
+3/3 sequentially; the reports agree with the current truth after this
+corrective reconciliation; and no tracked or staged diff remains.
+
+The concurrent readiness census remains an operational warning and future
+observability item (section 21); it does not block close-out.
