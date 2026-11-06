@@ -9,6 +9,13 @@
 - Evidence boundary: this document covers diagnosis, reproduction, and the
   locally verified correction. It makes no claim about production behaviour
   after deployment; that evidence is reported separately (section 12).
+- Follow-up amendment (owner-approved): DB_PROBE_TIMEOUT_MS was raised from
+  3000 ms to 8000 ms (corrected-route line 42); the route gained 2 comment
+  lines (168 to 170), so add 2 to every corrected-route line above 40 quoted
+  in this document. Budget values and corrected-route line references below
+  are frozen at implementation commit 76e882f; pre-fix route references are
+  unaffected. Post-release session evidence is reported in the session
+  release report (section 12 policy), not persisted here.
 
 ## 1. Executive summary
 
@@ -41,9 +48,11 @@ any network operation, regardless of Atlas health or the state of other
 instances.
 
 Correction: `probeDatabase()` now lazily imports the shared helper
-`lib/mongodb.ts`, connects inside one 3000 ms probe budget, and bounds
-`admin().ping()` by `min(remaining, 2000 ms)`. Warm instances reuse the
-helper's cached connection; concurrent probes share one in-flight attempt.
+`lib/mongodb.ts`, connects inside one bounded probe budget (3000 ms at the
+frozen implementation commit; 8000 ms after the owner-approved follow-up),
+and bounds `admin().ping()` by `min(remaining, 2000 ms)`. Warm instances
+reuse the helper's cached connection; concurrent probes share one in-flight
+attempt.
 
 Report verdict: root cause confirmed and corrected, with the implementation
 verified by the local gates in section 10. The full-history secret scan
@@ -164,7 +173,8 @@ Recorded C-fields:
   disconnecting (comment at corrected route line 61, present pre-fix as well).
 - Connection timeout: shallow ping capped at DB_PING_TIMEOUT_MS (2000 ms,
   line 35); the new connect step capped by the remaining total budget
-  DB_PROBE_TIMEOUT_MS (3000 ms, line 40).
+  DB_PROBE_TIMEOUT_MS (3000 ms, line 40 at the frozen implementation commit;
+  8000 ms, line 42 after the owner-approved follow-up; see header key).
 - Cache/promise behavior: lib/mongodb.ts caches connection and in-flight
   promise on globalThis and deduplicates concurrent callers; the route adds a
   deferred-promise share across concurrent GETs without storing state.
@@ -327,17 +337,20 @@ tests/operational-security.test.ts (43 insertions, 1 deletion):
 
 ## 9. Serverless implications
 
-- A cold instance now attempts one connection and stays within 3000 ms total,
-  independent of the platform's function timeout (that platform value was not
-  inspected; no Vercel deployment setting was read or changed).
+- A cold instance now attempts one connection and stays within its bounded
+  total (3000 ms at the frozen implementation commit; 8000 ms after the
+  owner-approved follow-up), independent of the platform's function timeout.
+  No maxDuration export exists in app/ and no vercel.json is present, so the
+  platform default governs; no Vercel deployment setting was read or changed.
 - A warm instance takes the helper's cached-connection short-circuit and adds
   only the shallow ping, capped at 2000 ms.
 - Concurrent readiness calls within an instance share one deferred promise;
   the helper additionally deduplicates at the globalThis level.
 - A failed or timed-out attempt returns 503 degraded only after the bounded
   attempt; no unbounded hang is possible.
-- Cost of the correction on a cold readiness request: up to 3000 ms added
-  latency in the worst case, versus an immediate but incorrect 503 before.
+- Cost of the correction on a cold readiness request: up to 8000 ms added
+  latency in the worst case (3000 ms at the frozen implementation commit),
+  versus an immediate but incorrect 503 before.
 
 ## 10. Validation (section F of the brief)
 
@@ -420,6 +433,19 @@ production probes) runs after this commit, and its evidence is reported in
 the session's final evidence report. No production outcome is asserted here,
 so no statement in this document can become stale when that chain completes.
 
+Post-release reconciliation (owner-approved follow-up): the 3000 ms budget
+adopted from the brief's 2-3 second preference (companion report, Decision 2)
+rested on that preference because no cold-handshake duration measurement was
+usable at diagnosis time (Vercel duration metrics are plan-gated). The owner
+approved a follow-up that raised DB_PROBE_TIMEOUT_MS to 8000 ms
+(corrected-route line 42; see the header key for the resulting +2 line
+shift), keeping the 2000 ms ping cap and the single-deadline arithmetic
+unchanged, and re-ran the same local suites with the same counters. Its
+post-release production verification is reported in the session release
+report, as this evidence boundary requires, and is not reasserted here. The
+timing corroboration in section 3 is unaffected: it characterises the
+pre-fix zero-network path, not a connect duration.
+
 ## 13. Exact changed files and non-mutation
 
 Change set (five files; deltas measured with git diff --numstat and wc):
@@ -457,7 +483,8 @@ Non-mutation attestations:
   route performs no logging of its own beyond generic operational events, but
   Vercel logs from the helper may carry driver detail. Changing that would
   require editing another production file and is recorded as an observation,
-  not performed.
+  not performed. The owner has requested a separate Scope Change Proposal for
+  that sanitization; it is not part of this change set.
 - The connection cache is per JavaScript runtime. In a serverless deployment
   each instance connects on its own within the budget; no shared
   cross-instance connection exists, which is the platform's normal model.

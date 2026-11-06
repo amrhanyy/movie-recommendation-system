@@ -239,14 +239,14 @@ describe('readiness cold-start contract', () => {
     pending.catch(() => undefined);
 
     // Just before the readiness budget: still waiting, connect was attempted.
-    await vi.advanceTimersByTimeAsync(2999);
+    await vi.advanceTimersByTimeAsync(7999);
     expect(harness.connectCalls).toBe(1);
     expect(settledAt).toBeNull();
 
     // The budget fires and the probe settles instead of hanging.
     await vi.advanceTimersByTimeAsync(1);
     const res = await pending;
-    expect(settledAt).toBe(fakeStart + 3000);
+    expect(settledAt).toBe(fakeStart + 8000);
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.status).toBe('degraded');
@@ -400,7 +400,7 @@ describe('readiness cold-start contract', () => {
     pending.catch(() => undefined);
     // Simulate the isolate pause: jump the wall clock past the deadline
     // before the in-flight probe resumes.
-    vi.setSystemTime(fakeStart + 5000);
+    vi.setSystemTime(fakeStart + 9000);
 
     const res = await pending;
 
