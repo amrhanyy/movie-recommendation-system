@@ -46,7 +46,16 @@ export const connectToMongoDB = async () => {
     cached.conn = await cached.promise;
   } catch (e) {
     cached.promise = null;
-    console.error('MongoDB connection error:', e);
+    const errorName = e instanceof Error ? e.name : 'UnknownError';
+    const raw =
+      typeof e === 'object' && e !== null
+        ? (e as { code?: unknown })
+        : ({} as { code?: unknown });
+    const errorCode = typeof raw.code === 'number' ? raw.code : undefined;
+    console.error(
+      'MongoDB connection error.',
+      errorCode === undefined ? { errorName } : { errorName, errorCode },
+    );
     throw e;
   }
 

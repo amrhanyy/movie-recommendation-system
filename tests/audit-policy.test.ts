@@ -3,13 +3,20 @@
  *
  * Supersedes the Phase 14 BRACES-EXC matrix. The policy under test is:
  *
- *   PRODUCTION CLEAN + ONE DEV-ONLY TEMPORARY EXCEPTION
+ *   CLEAN-ONLY FAIL-CLOSED (Phase 23 close-out of the dev-only Minimatch
+ *   exception; reconstructed and adapted from the unpushed local commit
+ *   ccb3690)
  *
- * - production scope must be completely clean (CLEAN_AUDIT, never consumes
- *   the exception),
- * - bare scope may accept exactly the approved minimatch dev-only exception
- *   (GHSA-g3hv-75wg-m249, source 1244012, minimatch 3.1.5, moderate,
- *   cvssScore 0, cvssVector null, expiry 2026-11-16T23:59:59Z).
+ * - both scopes must be completely clean; a clean audit is accepted as
+ *   CLEAN_AUDIT without consulting an exception record (the record may be
+ *   absent),
+ * - a non-clean audit without an exception record rejects fail-closed with
+ *   EXCEPTION_MISSING: there is no exception in config because the
+ *   Minimatch dev-only advisory is no longer observed by the registry,
+ * - a retained but malformed or empty exception file is a configuration
+ *   error (exit 2),
+ * - npm execution failures (spawn, empty output, malformed JSON, unexpected
+ *   exit) are infrastructure failures (exit 2).
  *
  * Test numbering follows the Phase 16B prompt section L (1..32). Tests 33..38
  * preserve still-valid behaviors from the Phase 14 BRACES-EXC matrix:
@@ -37,7 +44,10 @@
  *
  * Every fixture is synthetic (no npm process, no registry, no network). The
  * end-to-end CLI tests spawn the gate with a fake `npm` script written to a
- * temporary directory, so they are deterministic and offline as well.
+ * temporary directory, so they are deterministic and offline as well. The
+ * single exception is P23-C12 (Phase 23 section H case 12), which runs the
+ * live registry audits by design; P23-C12b pins the same clean-only contract
+ * offline.
  * No local-machine path is hard-coded anywhere in this file (K12): the fake
  * npm scripts live under os.tmpdir().
  */
@@ -63,7 +73,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
 // ---------------------------------------------------------------------------
-// Approved exception fixture (mirrors config/audit-exceptions.json)
+// Former exception fixture. config/audit-exceptions.json is removed at the
+// Phase 23 close-out; the in-memory fixture mirrors the record the gate
+// formerly accepted (still used to characterize exception-governed paths).
 // ---------------------------------------------------------------------------
 
 const BARE_VULN_PACKAGES = [
@@ -312,7 +324,10 @@ process.stdout.write(JSON.stringify(clean));
 process.exit(0);
 `;
 
-function runCli(envOverrides: Record<string, string> = {}): Promise<CliRunResult> {
+function runCli(
+  envOverrides: Record<string, string> = {},
+  timeoutMs = 30000,
+): Promise<CliRunResult> {
   return new Promise<CliRunResult>((resolve) => {
     execFile(
       process.execPath,
@@ -320,7 +335,7 @@ function runCli(envOverrides: Record<string, string> = {}): Promise<CliRunResult
       {
         cwd: projectRoot,
         env: { ...process.env, ...envOverrides },
-        timeout: 30000,
+        timeout: timeoutMs,
         maxBuffer: 16 * 1024 * 1024,
         encoding: 'utf8',
         windowsHide: true,
@@ -333,13 +348,33 @@ function runCli(envOverrides: Record<string, string> = {}): Promise<CliRunResult
   });
 }
 
+// Several Phase 23 cases exercise the CLI against a controlled state of the
+// repo-local config/audit-exceptions.json. Back it up before every test and
+// restore it exactly afterwards so a failed assertion cannot leave the
+// working tree mutated.
+const EXCEPTION_CONFIG_PATH = path.join(projectRoot, 'config', 'audit-exceptions.json');
+let exceptionConfigBackup: { existed: boolean; content: string | null } = {
+  existed: false,
+  content: null,
+};
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p16b-policy-'));
+  exceptionConfigBackup = fs.existsSync(EXCEPTION_CONFIG_PATH)
+    ? { existed: true, content: fs.readFileSync(EXCEPTION_CONFIG_PATH, 'utf8') }
+    : { existed: false, content: null };
 });
 
 afterEach(() => {
   if (tmpDir && fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+  const backup = exceptionConfigBackup;
+  if (backup.existed && backup.content !== null) {
+    fs.mkdirSync(path.dirname(EXCEPTION_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(EXCEPTION_CONFIG_PATH, backup.content, 'utf8');
+  } else if (!backup.existed && fs.existsSync(EXCEPTION_CONFIG_PATH)) {
+    fs.rmSync(EXCEPTION_CONFIG_PATH, { force: true });
   }
 });
 
@@ -843,5 +878,134 @@ describe('audit-policy (Phase 16B) — end-to-end CLI exit codes', () => {
     expect(result.stderr).toContain('raw audit package inventory');
     expect(result.stderr).toContain('left-pad');
     expect(result.stderr).toContain('POLICY REJECTED (exit 1)');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Phase 23 (Section H) - clean-only contract, required cases 1..12.
+//
+// Each P23-C<n> test maps to required case n of the Phase 23 prompt
+// section H. Required cases 9 and 11 are already covered directly by the
+// Phase 16B matrix and are referenced rather than duplicated:
+//   C9  -> L24b (CLI empty npm output -> exit 2)
+//   C11 -> L26b (CLI unexpected npm exit -> exit 2)
+// C8 is asserted end-to-end here; L25 and L25b pin the same failure class
+// at the helper and CLI-resolve boundaries.
+// C12 is the single live (network) check; every other test here is offline.
+// ---------------------------------------------------------------------------
+
+describe('audit-policy (Phase 23) - clean-only contract (Section H cases 1-12)', () => {
+  it('P23-C1. accepts a clean production audit when the exception file is absent', () => {
+    const result = evaluate(CLEAN_AUDIT, {
+      npmExitCode: 0,
+      scope: 'production',
+      exception: null,
+    });
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('CLEAN_AUDIT');
+    expect(result.observed.totalVulnerabilities).toBe(0);
+  });
+
+  it('P23-C2. accepts a clean bare audit when the exception file is absent', () => {
+    const result = evaluate(CLEAN_AUDIT, {
+      npmExitCode: 0,
+      scope: 'bare',
+      exception: null,
+    });
+    expect(result.accepted).toBe(true);
+    expect(result.reasonCode).toBe('CLEAN_AUDIT');
+  });
+
+  it('P23-C3. rejects a non-clean audit when the exception file is absent (fail-closed)', () => {
+    // Reconstructs ccb3690 L4b.
+    const result = evaluate(buildAudit(), { exception: null });
+    expectRejected(result, 'EXCEPTION_MISSING');
+    expect(result.observed.vulnerabilityPackages).toEqual([...BARE_VULN_PACKAGES].sort());
+  });
+
+  it('P23-C4. exits 2 when a retained exception file is malformed', async () => {
+    fs.mkdirSync(path.dirname(EXCEPTION_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(EXCEPTION_CONFIG_PATH, '{ this is not json', 'utf8');
+    const result = await runCli();
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('could not read exception configuration');
+  });
+
+  it('P23-C5. exits 2 when a retained exception file is empty', async () => {
+    fs.mkdirSync(path.dirname(EXCEPTION_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(EXCEPTION_CONFIG_PATH, '', 'utf8');
+    const result = await runCli();
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('could not read exception configuration');
+  });
+
+  it('P23-C6. one advisory cannot pass without a governing exception record', () => {
+    const result = evaluate(buildAudit({ packages: ['minimatch'] }), { exception: null });
+    expectRejected(result, 'EXCEPTION_MISSING');
+    expect(result.observed.totalVulnerabilities).toBe(1);
+  });
+
+  it('P23-C7. an additional vulnerable package cannot pass without a governing record', () => {
+    const result = evaluate(
+      buildAudit({ extraEntries: { 'left-pad': makePropagatedEntry('left-pad') } }),
+      { exception: null },
+    );
+    expectRejected(result, 'EXCEPTION_MISSING');
+    expect(result.observed.vulnerabilityPackages).toContain('left-pad');
+  });
+
+  it('P23-C8. exits 2 when npm cannot be spawned (spawn failure class)', async () => {
+    // An existing but non-executable/non-image file resolves as NPM_PATH
+    // (resolveNpmPath checks file existence only), then fails to spawn on
+    // every supported platform.
+    const notExecutable = writeFakeNpm('bin/fake-npm-not-executable.txt', 'not an executable\n');
+    const result = await runCli({ NPM_PATH: notExecutable });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('INFRASTRUCTURE FAILURE');
+  });
+
+  it('P23-C10-pure. classifies a malformed npm JSON evaluation as infrastructure', () => {
+    const evaluation = evaluate('not json at all');
+    expect(evaluation.reasonCode).toBe('AUDIT_JSON_MALFORMED');
+    expect(
+      classifyScopeOutcome({ ok: true, exitCode: 0, stdout: 'not json at all' }, evaluation),
+    ).toBe('infrastructure');
+  });
+
+  it('P23-C10. exits 2 when npm emits malformed audit JSON (infrastructure)', async () => {
+    const fakeNpm = writeFakeNpm(
+      'bin/fake-npm-malformed.js',
+      "process.stdout.write('this is not valid json');\nprocess.exit(0);\n",
+    );
+    const result = await runCli({ NPM_PATH: fakeNpm });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('AUDIT_JSON_MALFORMED');
+    expect(result.stderr).toContain('INFRASTRUCTURE FAILURE');
+  });
+
+  it('P23-C12. exits 0 with no exception file when both live audits are clean', async () => {
+    // Reconstructs ccb3690 L30. This is the only live (registry) check.
+    if (fs.existsSync(EXCEPTION_CONFIG_PATH)) {
+      fs.rmSync(EXCEPTION_CONFIG_PATH, { force: true });
+    }
+    const result = await runCli({}, 90000);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('clean-only fail-closed policy active');
+    expect(result.stderr).toContain(
+      "audit is clean for scope 'production' (0 vulnerable packages, 0 advisory objects)",
+    );
+    expect(result.stderr).toContain('result: ACCEPTED (exit 0)');
+  });
+
+  it('P23-C12b. exits 0 with no exception file and clean audits (offline, fake npm)', async () => {
+    if (fs.existsSync(EXCEPTION_CONFIG_PATH)) {
+      fs.rmSync(EXCEPTION_CONFIG_PATH, { force: true });
+    }
+    const fakeNpm = writeFakeNpm('bin/fake-npm-clean.js', FAKE_CLEAN_SCRIPT);
+    const result = await runCli({ NPM_PATH: fakeNpm });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('clean-only fail-closed policy active');
+    expect(result.stderr).toContain('result: ACCEPTED (exit 0)');
   });
 });
