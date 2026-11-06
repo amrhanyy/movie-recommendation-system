@@ -3,7 +3,7 @@ HYGIENE, DEPLOYMENT, AND FORMAL PROJECT CLOSE-OUT
 
 Repo: amrhanyy/movie-recommendation-system
 Date (UTC): 2026-11-05
-Phase status: COMPLETE, pending release chain (commit -> push -> PR -> merge -> deploy -> smoke)
+Phase status: COMPLETE (release chain executed; authenticated AI evidence recorded; readiness recovered by Phase 22; exception close-out handled by Phase 23)
 
 Branch: fix/ai-429-final-closeout (from origin/main bbc5e0f9547f52b13987bfb46e759a8f3ada5761)
 
@@ -24,8 +24,12 @@ budget for 429 responses (one bounded Retry-After <= 5s) while preserving the
 
 All local gates pass: 47 files / 579 tests, coverage at phase 20 baseline
 (60.00 / 50.81 / 71.30 / 61.16), typecheck 0, lint 0 errors, build 0. Audits
-are clean and the audit policy is ACCEPTED with the pre-existing dev-only
-Minimatch exception still valid (expiry 2026-11-16T23:59:59Z).
+are clean and the audit policy is ACCEPTED under the clean-only fail-closed
+policy: the time-limited dev-only Minimatch exception was removed at the
+Phase 23 close-out because the advisory is no longer observed by the registry
+(a non-clean audit now rejects fail-closed with EXCEPTION_MISSING). The
+authenticated recommendation succeeded in Production (section 7), and Phase 22
+restored the readiness probe to status=ready on all three sequential checks.
 
 ==================================================
 SECTION 2. Owner Authorization
@@ -45,14 +49,17 @@ dependencies, or direct pushes to main. No authorization was exceeded.
 SECTION 3. Final status
 ==================================================
 
-COMPLETE, PENDING RELEASE-CHAIN ACTIONS.
+COMPLETE.
 
 - Bounded 429 contract: implemented, tested, validated.
 - Local gates: all green.
-- Commit/PR/merge/deploy/smoke: pending scheduled actions (sections 43-52).
-- The phase does not require the owner's authenticated smoke request to be
-  triggered by this agent; it is a documented owner action per the
-  authorization (section 50).
+- Commit/PR/merge/deploy/smoke: executed and recorded (sections 43-49).
+- The owner-provided authenticated recommendation evidence (section 7)
+  satisfies the section 50 owner action; this agent did not trigger a
+  signed-in request.
+- Readiness was later recovered by Phase 22 (status=ready on three sequential
+  probes); it is no longer a close-out blocker.
+- Exception close-out is handled by Phase 23.
 
 ==================================================
 SECTION 4. Initial state
@@ -78,7 +85,7 @@ consolidated the Gemini transport into lib/gemini-provider.ts, set
 gemini-3.5-flash-lite as the default and production model, added observability,
 and simplified the 429 handling into the 3-attempt retry budget with a
 retry-after-cap of 30s. That behavior is documented in Phase 20 section 10
-(2026-11-05) and superseded here for the 429 contract only."""))
+(2026-11-05) and superseded here for the 429 contract only.
 
 ==================================================
 SECTION 6. Historical AI incident
@@ -351,19 +358,23 @@ SECTION 33. Audit-policy state
 ==================================================
 
 node scripts/audit-policy.mjs: ACCEPTED (exit 0), scope production
-CLEAN_AUDIT, scope bare CLEAN_AUDIT. Active exception:
-MINIMATCH-DEV-EXC-2026-11-02 (scope=bare, expires
-2026-11-16T23:59:59Z, owner=repository-maintainer) — unchanged this phase.
+CLEAN_AUDIT, scope bare CLEAN_AUDIT. No exception applies: the time-limited
+dev-only Minimatch record was removed at the Phase 23 close-out because the
+registry no longer flags it. config/audit-exceptions.json is absent; the gate
+runs clean-only fail-closed and rejects a non-clean audit with
+EXCEPTION_MISSING regardless of advisory identity or inventory.
 
 ==================================================
 SECTION 34. Minimatch review snapshot
 ==================================================
 
-Current date 2026-11-05. Production inventory: 0 vulnerable packages, 0
-advisory objects. Bare inventory: 0 vulnerable packages, 0 advisory objects,
-exception applied (MINIMATCH-DEV-EXO-2026-11-02). Review deadline 2026-11-09,
-expiry 2026-11-16T23:59:59Z. No change to the exception in Phase 21 per
-authorization.
+Snapshot date 2026-11-05. Production inventory: 0 vulnerable packages, 0
+advisory objects. Bare inventory: 0 vulnerable packages, 0 advisory objects.
+The exception record that accompanied that snapshot (MINIMATCH-DEV-EXC-2026-11-02)
+was removed at the Phase 23 close-out because the registry no longer flags the
+advisory; the review deadline 2026-11-09 and expiry 2026-11-16T23:59:59Z are
+superseded. Phase 21 made no change to the exception per its authorization;
+the close-out was delegated to Phase 23.
 
 ==================================================
 SECTION 35. Phase 19 documentation correction
@@ -579,28 +590,34 @@ None. No rollback was executed or required.
 SECTION 54. Remaining risks
 ==================================================
 
-1. The owner's authenticated smoke request (section 50) has not yet been
-triggered from a signed-in production session. 2. The dev-only Minimatch
-exception expires 2026-11-16T23:59:59Z and requires review per the exception
-record (no extension in this phase). 3. GitHub Actions org billing lock still
-produces no CI signal on new commits; the phase does not gate merge on it.
+1. The authenticated recommendation evidence is recorded (section 7) and
+carried into the Phase 23 report; no further authenticated request is needed
+for this phase.
+2. The dev-only Minimatch exception was removed at the Phase 23 close-out
+because the advisory is no longer observed by the registry; the gate rejects
+any non-clean audit fail-closed with EXCEPTION_MISSING.
+3. GitHub Actions org billing lock still produces no CI signal on new
+commits; the phase does not gate merge on it.
 4. A 503-preceded-by-429 chain caps at 2 calls (the 429 retirement takes
-precedence over the 5xx budget) — this matches the '429 retires the sequence'
-requirement. 5. Production /api/health/ready reports components
-config=ready, database=disconnected, redis=optional — state preserved from
-the Phase 19 hand-off, not a regression of this phase; any recovery of the
-MongoDB connection is an owner action.
+precedence over the 5xx budget) - this matches the '429 retires the sequence'
+requirement.
+5. The readiness degradation observed at the Phase 21 smoke
+(database=disconnected, section 49) was resolved by Phase 22; the readiness
+probe now passes three sequential checks with database=ready. No readiness or
+timeout change is made here.
 
 ==================================================
 SECTION 55. Security follow-up
 ==================================================
 
-1. Review the dev-only Minimatch audit exception against its expiry before
-2026-11-16T23:59:59Z. 2. Once the upstream ESLint chain becomes compatible with
-minimatch 11.x, remove the exception and the minimatch@10.2.6 override and
-require a fully clean audit. 3. The corrected 429 contract is a security
-control surface (rate-limit) tested only locally — the production correlation
-is the live proof.
+1. The review deadline 2026-11-09 and expiry 2026-11-16T23:59:59Z are
+superseded: the exception was removed at the Phase 23 close-out and the gate
+fails closed on any non-clean audit, so no exception remains to consume.
+2. Re-run `node scripts/audit-policy.mjs` after every dependency change and
+confirm both scopes remain CLEAN_AUDIT (exit 0) before any production artifact
+is shipped.
+3. The corrected 429 contract is a security control surface (rate-limit)
+tested only locally - the production correlation is the live proof.
 
 ==================================================
 SECTION 56. Requirement Traceability Matrix
@@ -641,28 +658,31 @@ T10 GITIGNORE COMPLETED, T11 BRANCH COMPLETED, T12 COMMIT COMPLETED
 (6 paths, mergeable=true), T15 MERGE COMPLETED (00a36bc, merge commit,
 PGP-signed), T16 DEPLOY COMPLETED (dpl_HDi3kJfivbnYkeWkA4rDk5mN24QH,
 READy), T17 SMOKE COMPLETED (health endpoints + root page read-only),
-T18 AUDIT-REV COMPLETED (npm audit 0 vulns, audit-policy ACCEPTED).
-The owner's authenticated contribution request (section 50) is the only
-pending action; the minimatch exception review is a scheduled follow-up.
+T18 AUDIT-REV COMPLETED (npm audit 0 vulns, audit-policy ACCEPTED),
+T19 AUDIT-CLOSEOUT HANDLED BY PHASE 23: the dev-only Minimatch exception was
+removed; config/audit-exceptions.json is absent; the gate runs clean-only
+fail-closed and exits 0 with clean audits on both scopes.
+The authenticated recommendation evidence is recorded (section 7); the
+readiness blocker was resolved by Phase 22. No Phase 21 acceptance item
+remains pending.
 
 ==================================================
 SECTION 58. Formal project-closeout recommendation
 ==================================================
 
-The project is functionally and engineering-close-out ready: focused and
-full gates pass, audits remain acceptable, the bounded 429 contract is
-implemented and tested, and Production is healthy on the authorized model
-with the TMDB fallback. The release chain (commit, push, PR, merge, automatic
-Vercel production deployment, readiness, smoke, log correlation) is the next
-scheduled sequence. The temporary Minimatch exception is a scheduled security
-follow-up and does not block functional close-out while the production audit
-remains clean and the expiry has not passed.
+The project is functionally and engineering-close-out ready on every gate
+this phase controls: focused and full gates pass, audits are clean, the
+bounded 429 contract is implemented and tested, and Production is healthy on
+the authorized model with the TMDB fallback. The release chain (commit,
+push, PR #17, merge commit 00a36bc, automatic Vercel Production deployment,
+readiness, read-only smoke, and log correlation) is complete and recorded in
+sections 43-49. The authenticated recommendation succeeded in Production
+(section 7). The readiness degradation observed at this phase's smoke was
+resolved by Phase 22 (three sequential status=ready probes).
 
-Use 'PROJECT FUNCTIONAL AND ENGINEERING CLOSE-OUT COMPLETE' once the full
-release chain is completed and the owner's authenticated smoke is correlated.
-Decision: the release chain through the automatic deployment, production
-health endpoints, and read-only smoke is now complete on this branch's
-artifact; the merge is authored, the deployment is attributed to main, and
-the audit policy is accepted. The owner's authenticated smoke request from a
-signed-in session (section 50) is the final acceptance item before the
-close-out declaration.
+The temporary Minimatch exception is no longer a follow-up: it was removed at
+the Phase 23 close-out and the audit policy now runs clean-only fail-closed.
+
+Decision: Phase 21's implementation and release are complete; its exception
+close-out was delegated to and completed by Phase 23, and its readiness
+recovery was delivered by Phase 22. No Phase 21 acceptance item remains open.
