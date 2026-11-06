@@ -93,15 +93,17 @@ jobs:
         # `npm audit --audit-level=high --omit=dev`
         # `npm audit --production` and `npm audit` (bare, full tree).
         # Phase 16B (DEP-AUDIT-005) routes both through scripts/audit-policy.mjs,
-        # a fail-closed evaluator with a scope-aware exception policy:
-        # - the production audit must be clean (zero vulnerabilities),
-        # - the bare audit carries exactly one time-limited, dev-only Minimatch
-        #   advisory exception defined in config/audit-exceptions.json,
-        # - the exception expires on 2026-11-16T23:59:59Z,
-        # - the gate fails closed after expiry or on any advisory metadata drift
-        #   (advisory identity, severity, scope, or inventory changes).
-        # The policy gate exits 0 only while that exact, time-limited,
-        # human-reviewed exception applies; otherwise it exits nonzero.
+        # a fail-closed evaluator with a clean-only exception policy:
+        # - both the production and the bare audit must be clean (zero
+        #   vulnerabilities),
+        # - a non-clean audit is rejected fail-closed without any exception
+        #   record (the time-limited dev-only Minimatch exception at
+        #   config/audit-exceptions.json was removed at the Phase 23 close-out
+        #   because the advisory is no longer observed by the registry),
+        # - the gate fails closed on every advisory metadata drift.
+        # The policy gate exits 0 only while both audits are clean; otherwise it
+        # exits nonzero (the evaluator reports every accepted, rejected or
+        # inferred advisory).
         run: node scripts/audit-policy.mjs
 
       - name: Secret scan (gitleaks)

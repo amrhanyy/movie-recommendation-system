@@ -2,13 +2,16 @@
 /**
  * Phase 16B audit policy gate (DEP-AUDIT-005).
  *
- * Policy: PRODUCTION CLEAN + ONE DEV-ONLY TEMPORARY EXCEPTION.
+ * Policy: CLEAN-ONLY FAIL-CLOSED (Phase 23 close-out of the dev-only
+ * Minimatch exception; reconstructed and adapted from the unpushed local
+ * commit ccb3690).
  *
- * - The production scope must be completely clean. A clean production audit is
- *   accepted as CLEAN_AUDIT without ever consulting the exception. A bare
- *   exception can never accept production findings (scope gate).
- * - The bare scope may accept exactly the approved dev-only exception record.
- *   Any other advisory, package, version, scope, or vulnerable inventory
+ * - Both scopes must be completely clean. A clean audit is accepted as
+ *   CLEAN_AUDIT without consulting an exception record; the record may be
+ *   absent (a missing config/audit-exceptions.json is not a config error).
+ * - A non-clean audit without an exception record rejects fail-closed with
+ *   EXCEPTION_MISSING: no record exists to accept findings. With a record,
+ *   every advisory, package, version, scope, or inventory mutation still
  *   rejects fail-closed.
  *
  * Evaluator (pure):
@@ -29,8 +32,12 @@
  *     validated NPM_PATH -> validated npm_execpath -> npm adjacent to
  *     process.execPath -> common direct prefix candidates -> bounded
  *     breadth-first filesystem search. No local-machine hard-coded path.
- *   - Infrastructure failures (npm cannot run, no output, unexpected exit
- *     code, registry error body) exit with EXIT_CONFIG_OR_INTERNAL = 2.
+ *   - npm execution failures (spawn, empty output, malformed JSON, unexpected
+ *     exit code) exit with EXIT_CONFIG_OR_INTERNAL = 2. A registry error body
+ *     is rejected fail-closed with NPM_INFRASTRUCTURE_FAILURE (exit 1); it
+ *     never accepts.
+ *   - A retained exception file that is malformed, empty, or schema-invalid
+ *     is a configuration error and exits 2.
  *   - Policy rejection exits with 1. Success exits with 0.
  */
 
@@ -641,11 +648,6 @@ export function evaluateAuditPolicy(input) {
     return reject('AUDIT_SCOPE_INVALID', `unsupported audit scope '${String(scope)}'`, baseObserved);
   }
 
-  const schemaErrors = validateExceptionSchema(exception);
-  if (schemaErrors.length > 0) {
-    return reject('EXCEPTION_SCHEMA_INVALID', `exception schema invalid: ${schemaErrors.join('; ')}`, baseObserved);
-  }
-
   const parsed = parseAuditJson(auditJson);
   if (parsed.error) {
     return reject('AUDIT_JSON_MALFORMED', parsed.error, baseObserved);
@@ -710,6 +712,22 @@ export function evaluateAuditPolicy(input) {
     totalVulnerabilities: total,
     vulnerabilityPackages: [...vulnNames].sort(),
   };
+
+  // The exception record governs every non-clean audit. A clean audit is
+  // accepted above without one; a finding with no governing record accepts
+  // nothing and rejects fail-closed (clean-only policy).
+  if (!isPlainObject(exception)) {
+    return reject(
+      'EXCEPTION_MISSING',
+      `audit scope '${scope}' reports ${total} vulnerable packages, but no exception record exists to accept them (clean-only fail-closed policy)`,
+      { ...baseObserved, ...findingObserved },
+    );
+  }
+
+  const schemaErrors = validateExceptionSchema(exception);
+  if (schemaErrors.length > 0) {
+    return reject('EXCEPTION_SCHEMA_INVALID', `exception schema invalid: ${schemaErrors.join('; ')}`, baseObserved);
+  }
 
   // J1: a finding in a scope the exception does not govern is never accepted.
   if (scope !== exception.scope) {
@@ -847,6 +865,11 @@ export function classifyScopeOutcome(runResult, evaluation) {
     return 'infrastructure';
   }
   if (!evaluation) {
+    return 'infrastructure';
+  }
+  if (evaluation.reasonCode === 'AUDIT_JSON_MALFORMED') {
+    // Unparsable npm output is an execution failure, not a policy decision:
+    // the gate never received a vulnerability report to judge (exit 2).
     return 'infrastructure';
   }
   return evaluation.accepted ? 'accepted' : 'policy-rejected';
@@ -1057,23 +1080,34 @@ function readInstalledVersions(lockfilePath) {
 }
 
 async function main() {
-  let exception;
+  // A missing exception record is the clean-only steady state, not a
+  // configuration failure: clean audits are accepted without one and any
+  // finding rejects fail-closed. A retained file that cannot be read or
+  // parsed, or that fails schema validation, is a configuration error.
+  let exception = null;
   try {
     exception = readExceptionFile(path.join(projectRoot, 'config', 'audit-exceptions.json'));
   } catch (error) {
-    console.error(`audit-policy: could not read exception configuration: ${error.message}`);
-    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-    return;
+    if (error.code === 'ENOENT') {
+      console.error('audit-policy: no exception configuration found; clean-only fail-closed policy active');
+      exception = null;
+    } else {
+      console.error(`audit-policy: could not read exception configuration: ${error.message}`);
+      process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+      return;
+    }
   }
 
-  const schemaErrors = validateExceptionSchema(exception);
-  if (schemaErrors.length > 0) {
-    console.error('audit-policy: exception configuration is invalid:');
-    for (const error of schemaErrors) {
-      console.error(`  - ${error}`);
+  if (isPlainObject(exception)) {
+    const schemaErrors = validateExceptionSchema(exception);
+    if (schemaErrors.length > 0) {
+      console.error('audit-policy: exception configuration is invalid:');
+      for (const error of schemaErrors) {
+        console.error(`  - ${error}`);
+      }
+      process.exitCode = EXIT_CONFIG_OR_INTERNAL;
+      return;
     }
-    process.exitCode = EXIT_CONFIG_OR_INTERNAL;
-    return;
   }
 
   let installedVersions;
@@ -1096,7 +1130,11 @@ async function main() {
 
   console.error(`audit-policy: node=${process.execPath}`);
   console.error(`audit-policy: npm=${npmPath}`);
-  console.error(`audit-policy: exception=${exception.id} scope=${exception.scope} expires=${exception.expiryDate} owner=${exception.owner}`);
+  if (isPlainObject(exception)) {
+    console.error(`audit-policy: exception=${exception.id} scope=${exception.scope} expires=${exception.expiryDate} owner=${exception.owner}`);
+  } else {
+    console.error('audit-policy: exception=<none>; no record exists to accept findings, so a non-clean audit would reject fail-closed');
+  }
 
   const now = new Date();
   const outcomes = new Map();
