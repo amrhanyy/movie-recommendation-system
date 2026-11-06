@@ -36,8 +36,10 @@ const DB_PING_TIMEOUT_MS = 2000;
 
 // Whole database-probe budget (ms): the cold-start connect and the shallow
 // ping must both fit inside this window so a single readiness probe can never
-// hang a serverless invocation. Prefer 2-3 seconds.
-const DB_PROBE_TIMEOUT_MS = 3000;
+// hang a serverless invocation. Post-release evidence: 6 of 39 cold probes
+// exceeded 3000 ms while warm probes answered in 0.44-0.59 s; the budget is
+// therefore 8000 ms (no maxDuration pin exists; the platform default applies).
+const DB_PROBE_TIMEOUT_MS = 8000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {

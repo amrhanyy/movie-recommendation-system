@@ -11,6 +11,12 @@
 - Evidence boundary: implementation and local validation only; the release
   chain runs after this commit and its evidence is reported in the session's
   final evidence report (section 12).
+- Follow-up amendment (owner-approved): DB_PROBE_TIMEOUT_MS was raised from
+  3000 ms to 8000 ms (corrected-route line 42); the route gained 2 comment
+  lines (168 to 170), so add 2 to every corrected-route line above 40 quoted
+  in this document. Budget values and corrected-route line references below
+  are frozen at implementation commit 76e882f; its post-release verification
+  is reported in the session release report (section 12 policy).
 
 ## 1. Objective
 
@@ -76,6 +82,11 @@ Reason: a single deadline makes the bound arithmetic provable: connect is
 capped by remaining time and ping by min(remaining, 2000).
 Tradeoff: worst-case cold readiness latency of 3000 ms.
 Validation: focused tests 4, 9 and 12; fake-timer assertions on settle times.
+Amendment (owner-approved follow-up): based on post-release session evidence
+(reported in the session release report, not persisted here per section 12
+policy), DB_PROBE_TIMEOUT_MS was raised from 3000 ms to 8000 ms. The
+single-deadline arithmetic and the min(remaining, 2000 ms) ping cap are
+unchanged; the worst-case cold readiness latency is now 8000 ms.
 
 Decision 3: share concurrent readiness work with a deferred promise, and pin
 the budget-exhausted guard with a ping-not-called assertion.
@@ -90,12 +101,15 @@ Validation: focused tests 6 and 12.
 
 ## 5. Implementation
 
-app/api/health/ready/route.ts (37 insertions, 6 deletions; 137 to 168 lines):
+app/api/health/ready/route.ts (37 insertions, 6 deletions; 137 to 168 lines
+at the frozen implementation commit; 170 lines after the owner-approved
+follow-up):
 
 - Header contract comment updated for the cold-start connect and both
   budgets (lines 7-32).
-- DB_PROBE_TIMEOUT_MS = 3000 added as the whole-probe budget (line 40),
-  alongside the existing 2000 ms ping cap (line 35).
+- DB_PROBE_TIMEOUT_MS added as the whole-probe budget (3000 ms, line 40, at
+  the frozen implementation commit; 8000 ms, line 42, after the owner-approved
+  follow-up), alongside the existing 2000 ms ping cap (line 35).
 - probeDatabase (lines 58-94) now computes one deadline (59); on readyState
   not 1 lazily imports and calls the shared helper inside withTimeout bounded
   by the remaining budget (62-73); re-checks readyState (76-78), the db
@@ -198,7 +212,8 @@ tests/operational-security.test.ts readiness coverage:
 - Warm instance: cached-connection short-circuit, then a ping capped at
   2000 ms.
 - Cold instance: one bounded connect attempt, then ping; total at most
-  3000 ms.
+  8000 ms after the owner-approved follow-up (3000 ms at the frozen
+  implementation commit).
 - Concurrent probes on one instance: one deferred promise.
 - Failure or timeout: 503 degraded with a body carrying no URI, host,
   credential, database name or driver text.
@@ -290,10 +305,18 @@ amending this one.
   console on connection failure; readiness responses stay clean, but Vercel
   logs from the helper may carry driver detail. Changing it would require
   editing another production file and is recorded as an observation in the
-  diagnosis report section 14.
+  diagnosis report section 14. The owner has requested a separate Scope
+  Change Proposal for its sanitization; it is not part of this change set.
 - Pre-existing CI red and gitleaks history findings are observed,
   classified and left untouched as out of scope (diagnosis report sections
   11 and 14).
+- The 3000 ms budget (Decision 2) was raised to 8000 ms in the owner-approved
+  follow-up; its post-release verification is in the session release report,
+  not this document (section 12 policy).
+- Cold-handshake duration percentiles remain unmeasurable on the current
+  Vercel plan (duration metrics are plan-gated), so 8000 ms is an
+  outcome-derived choice that should be re-evaluated if measurements become
+  available.
 
 ## 15. Verdict
 
