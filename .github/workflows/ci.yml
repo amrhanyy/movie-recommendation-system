@@ -1,9 +1,10 @@
 name: CI
 
+# Automatic GitHub Actions runs are temporarily disabled because the current
+# account-level Actions execution is unavailable. The workflow remains
+# manually runnable and its local-equivalent quality gates are documented.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
