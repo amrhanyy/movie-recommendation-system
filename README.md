@@ -1,5 +1,14 @@
 <div align="center">
 
+<p align="center">
+  <img
+    src="./docs/assets/moviemind-logo.svg"
+    alt="MovieMind logo"
+    width="104"
+    height="104"
+  />
+</p>
+
 # MovieMind
 
 AI-powered movie discovery, personalized recommendations, and a secure personal watch experience.
