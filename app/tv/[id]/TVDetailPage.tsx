@@ -79,7 +79,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
   // Unwrap params with React.use()
   const unwrappedParams = use(params) as { id: string };
   const tvShowId = unwrappedParams.id;
-  
+
   const router = useRouter()
   const [show, setShow] = useState<TVShow | null>(null)
   const [error, setError] = useState("")
@@ -128,7 +128,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
   useEffect(() => {
     async function fetchShow() {
       if (!tvShowId) return; // Don't fetch if we don't have an ID yet
-      
+
       try {
         const [showRes, similarRes, recsRes] = await Promise.all([
           fetch(`/api/tv/${tvShowId}`),
@@ -137,7 +137,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
         ])
 
         if (!showRes.ok) throw new Error('Failed to fetch TV show')
-        
+
         const [showData, similarData, recsData] = await Promise.all([
           showRes.json(),
           similarRes.json(),
@@ -195,7 +195,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
             <div className="flex h-full items-center pb-8 gap-12">
               {/* Poster Section */}
               <div className="flex-shrink-0 hidden md:block">
-                <div className="relative w-[370px] aspect-[2/3] rounded-xl overflow-hidden 
+                <div className="relative w-[370px] aspect-[2/3] rounded-xl overflow-hidden
                             shadow-2xl border border-gray-700/50 transform translate-y-8">
                   <Image
                     src={`https://image.tmdb.org/t/p/w780${show.poster_path}`}
@@ -250,7 +250,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                           e.stopPropagation();
                           handleGenreClick(genre.id, genre.name);
                         }}
-                        className="px-3 py-1 rounded-full bg-gray-800/50 backdrop-blur-sm 
+                        className="px-3 py-1 rounded-full bg-gray-800/50 backdrop-blur-sm
                                   border border-gray-700/50 text-sm text-gray-300
                                   hover:bg-gray-700/50 hover:text-cyan-400 hover:border-cyan-400/50
                                   transition-all duration-300 cursor-pointer"
@@ -327,7 +327,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                 <div className="w-1 h-8 bg-cyan-500 rounded-full glow-cyan animate-pulse" />
                 <h2 className="text-2xl font-bold text-white tracking-wider">ADDITIONAL DETAILS</h2>
               </div>
-              
+
               <div className="grid grid-cols-1 gap-6">
                 {/* Status */}
                 <div className="space-y-2">
@@ -414,12 +414,12 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                 <div className="w-1 h-8 bg-cyan-500 rounded-full glow-cyan animate-pulse" />
                 <h2 className="text-2xl font-bold text-white tracking-wider">TRAILER</h2>
               </div>
-              
-              <TVShowTrailer 
-                tvShowId={tvShowId} 
-                initialTrailerKey={show.videos?.results.find(v => 
+
+              <TVShowTrailer
+                tvShowId={tvShowId}
+                initialTrailerKey={show.videos?.results.find(v =>
                   v.type === "Trailer" && v.site === "YouTube"
-                )?.key} 
+                )?.key}
               />
             </div>
           </div>
@@ -434,7 +434,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
             <div className="w-1 h-8 bg-cyan-500 rounded-full glow-cyan animate-pulse" />
             <h2 className="text-2xl font-bold text-white tracking-wider">TOP CAST</h2>
           </div>
-          
+
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
             {show.credits.cast.slice(0, 8).map((person) => (
               <div
@@ -442,8 +442,8 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                 className="group cursor-pointer"
                 onClick={() => router.push(`/actor/${person.id}`)}
               >
-                <div className="relative aspect-square rounded-full overflow-hidden mb-2 
-                            transform group-hover:scale-105 transition-all duration-300 
+                <div className="relative aspect-square rounded-full overflow-hidden mb-2
+                            transform group-hover:scale-105 transition-all duration-300
                             border-2 border-gray-700/50 hover:border-cyan-500/50">
                   <Image
                     src={person.profile_path
@@ -456,7 +456,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                     loading="lazy"
                     className="object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent
                               opacity-0 group-hover:opacity-100 transition-all duration-500" />
                 </div>
                 <h3 className="font-medium text-center text-gray-100 text-xs group-hover:text-cyan-400 transition-colors truncate">
@@ -512,8 +512,8 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                   href={`/tv/${show.id}`}
                   aria-label={`View details for ${show.name}`}
                   className="flex-none w-[180px] group/item block focus:outline-none" prefetch={false}>
-                  <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
-                              transform group-hover/item:scale-105 transition-all duration-300 
+                  <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3
+                              transform group-hover/item:scale-105 transition-all duration-300
                               border border-gray-700/50">
                     <Image
                       src={show.poster_path
@@ -540,7 +540,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                         className={`w-4 h-4 ${isInWatchlist('tv', show.id) ? 'fill-white' : ''}`}
                       />
                     </button>
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent
                                 opacity-0 group-hover/item:opacity-100 transition-all duration-500">
                       <div className="absolute bottom-0 left-0 right-0 p-4">
                         <p className="text-cyan-400 text-sm">
@@ -603,8 +603,8 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                   href={`/tv/${show.id}`}
                   aria-label={`View details for ${show.name}`}
                   className="flex-none w-[180px] group/item block focus:outline-none" prefetch={false}>
-                  <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
-                              transform group-hover/item:scale-105 transition-all duration-300 
+                  <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3
+                              transform group-hover/item:scale-105 transition-all duration-300
                               border border-gray-700/50">
                     <Image
                       src={show.poster_path
@@ -631,7 +631,7 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
                         className={`w-4 h-4 ${isInWatchlist('tv', show.id) ? 'fill-white' : ''}`}
                       />
                     </button>
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent 
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent
                                 opacity-0 group-hover/item:opacity-100 transition-all duration-500">
                       <div className="absolute bottom-0 left-0 right-0 p-4">
                         <p className="text-cyan-400 text-sm">
@@ -655,9 +655,9 @@ export default function TVShowPage({ params }: { params: Promise<{ id: string }>
 
       {/* Back Button */}
       <div className="mt-8 flex justify-center">
-        <button 
-          onClick={() => router.back()} 
-          className="px-8 py-3 rounded-xl bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 
+        <button
+          onClick={() => router.back()}
+          className="px-8 py-3 rounded-xl bg-gray-800/50 backdrop-blur-sm border border-gray-700/50
                   text-gray-300 hover:text-white hover:border-gray-600 transition-all duration-300"
         >
           Back to Browse
