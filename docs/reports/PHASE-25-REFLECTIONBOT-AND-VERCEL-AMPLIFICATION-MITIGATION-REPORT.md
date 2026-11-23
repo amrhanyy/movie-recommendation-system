@@ -5,7 +5,8 @@
 | Repository | `amrhanyy/movie-recommendation-system` |
 | Branch | `fix/reflectionbot-and-vercel-amplification-mitigation` |
 | Code commit | `2ea4374` (parent `d0184c9`) |
-| Documentation commit | `docs: record Reflectionbot and Vercel mitigation` (Commit B) |
+| Documentation commit | `94810eb` "docs: record Reflectionbot and Vercel mitigation" (Commit B) |
+| Commits on branch | 6 (sections 47-49 and 60 list every one) |
 | Pull request | #28, OPEN, base `main` |
 | Production URL | https://moviemind-re.vercel.app |
 | Report date | 2026-11-23 |
@@ -49,10 +50,13 @@ deduplicates the feature fetch, narrows the middleware matcher, blocks the crawl
 `robots.txt`, and makes the Redis client stop issuing commands against an exhausted
 quota.
 
-Result summary: 62 files changed (51 modified, 11 added, 0 deleted), +2677 / -1694.
-Focused suite 99/99 green. Full suite 5 failed / 654 passed, with those exact five
-failures reproduced on the untouched baseline. Build, typecheck and lint exit clean.
-The Vercel preview could not be verified because the project is manually paused.
+Result summary: Commit A alone changed 62 files (51 modified, 11 added, 0 deleted),
++2677 / -1694; the whole branch (six commits) changed 64 files (51 modified, 13 added,
+0 deleted), +4697 / -1694. Focused suite 104/104 green. Full suite 5 failed / 659
+passed (664), with those exact five failures reproduced on the untouched baseline.
+Build, typecheck and lint exit clean. The Vercel preview could not be verified because
+the project is manually paused. Sections 11, 12, 15, 36 and 51 were corrected in
+section 60 after this report's claims were re-measured against a fresh build.
 
 ## 2. Final phase status
 
@@ -200,32 +204,49 @@ enough to generate the load.
 
 ## 11. Dynamic movie and TV amplification
 
-| Route | Build mode | Revalidate | Requests | Cached |
+| Route | Build classification before Phase 25 | Build classification after Phase 25 | Requests | Cached |
 |---|---|---|---|---|
-| `/movie/[id]` | `ƒ` dynamic (ISR) | 900 s | 309 | 0% |
-| `/tv/[id]` | `ƒ` dynamic (ISR) | 900 s | 116 | 0% |
+| `/movie/[id]` | `ƒ` (accidental dynamic: a `use client` page cannot export route config) | `● (SSG)` shell + on-demand ISR, `revalidate = 900` | 309 | 0% |
+| `/tv/[id]` | `ƒ` (accidental dynamic, same cause) | `● (SSG)` shell + on-demand ISR, `revalidate = 900` | 116 | 0% |
 
-Both routes are dynamic per the build output, so each request that reaches the origin
-runs the page function. With ISR at 900 seconds a warmed entry can be served from the
-cache, but the captured requests show no reuse - consistent with a client requesting
-many distinct title IDs, each one a cold key.
+Captured-burst behaviour: every request that reached the origin ran the page function,
+and the capture shows no cache reuse - consistent with a client requesting many
+distinct title IDs, each one a cold key (call it `MOVIE_TV_DYNAMIC_FUNCTION_AMPLIFICATION=CONFIRMED`).
 
-Phase 25 does not change the rendering mode of these pages. It removes the prefetch
-fan-out that created the burst and makes the supporting JSON APIs cacheable, so a cold
-page render no longer implies four uncached data calls.
+Phase 25 **does** change the classification of these two routes (section 60
+correction: the original draft of this table read `ƒ` for both rows, which was wrong).
+Before, the pages were bare `use client` modules with no way to export segment config,
+so Next classified them as fully dynamic. Now the server wrapper exports
+`revalidate = 900` plus an explicit `generateStaticParams()`, and the Production build
+reports `● (SSG)`; `dynamicParams` stays true, so an uncached id renders on demand and
+is then reused for 900 s. The prefetch fan-out removal and CDN-cached supporting APIs
+complete the cost story.
 
 ## 12. Protected-route middleware amplification
 
-`middleware.ts` is modified in Commit A. The resulting matcher covers only the
-protected surface: `auth`, `ai-recommendations`, `chat`, `history`, `watchlist`,
-`favorites`, `user`, `admin`, and the `ai-similar` leaf. Those matches are stamped
-`private, no-store`.
+`middleware.ts` is modified in Commit A - but the matcher itself was **not**
+narrowed (section 60 correction: the original draft of this section implied it had
+been). The baseline matcher already covered only the protected surface: auth pages,
+`ai-recommendations`, `chat`, `chat-history`, `history`, `watchlist`, `favorites`,
+`user`/`users`, `admin`, `profile`, `ai-assistant`, and the `ai-similar` leaf; the
+matcher was left byte-identical to `d0184c9`.
 
-Effect on cost: public content routes are no longer in the middleware's scope, so a
-crawler request for a public page does not pay for an auth check and does not produce
-a middleware-generated redirect that would itself count as an edge request. The
-protected paths keep the strict behaviour, because their responses are user-specific
-and must never be cached.
+What did change in middleware, and what it costs or saves:
+
+1. The internal HTTP self-fetch to `/api/features` for `/ai-assistant` and
+   `/api/ai-recommendations` is gone - that fetch was a request amplifier (every
+   middleware hit produced a second request) and is now impossible at the Edge
+   boundary. The feature decision moved into the Node handlers.
+2. Authenticated API matches are stamped `private, no-store`, so a per-user response
+   can never be stored by the shared CDN.
+3. Protected navigation links (`/favorites`, `/watchlist`, `/ai-assistant`,
+   `/profile`, `/admin`) now render with `prefetch={false}`, so a reflected crawl of a
+   detail page no longer triggers middleware auth checks and `/auth/signin` redirect
+   chains before any user interaction.
+
+The `<a>`-level protection on public content routes (`/movie/[id]`, `/tv/[id]`) is
+provided by the prefetch containment, not by the matcher, because those paths were
+never in the matcher's scope.
 
 ## 13. FeatureSettings source of truth
 
@@ -241,7 +262,10 @@ and still fails closed with `503` when the store cannot be resolved.
 `FeatureSettings` storage semantics are unchanged: no schema change, no migration, no
 admin API change, and no Environment Variable was added or modified. The
 `/api/features` response remains `private, no-store`, because per-deployment feature
-state must not be cached by a shared CDN.
+state must not be cached by a shared CDN. As of the section 60 corrections the server
+resolver additionally coalesces concurrent evaluations into one in-flight promise
+(no TTL; the promise clears on settle), so parallel gate checks share one MongoDB read
+while any later admin update is still observed by the next decision.
 
 ## 14. Feature-gate migration
 
@@ -262,10 +286,14 @@ request, which is why the endpoint appears at 134 requests with a 0% cache rate.
 
 After: `hooks/useFeatures.ts` owns the fetch with a bounded TTL cache and a single
 in-flight promise, so concurrent consumers share one request and remounts inside the
-TTL window issue none. Static correlation confirms the consolidation: across `app`,
-`components`, `lib`, `contexts` and `hooks`, the literal `/api/features` appears in
-only three places - the server resolver, the shared public-path constants module, and
-this hook.
+TTL window issue none. Static correlation confirms the consolidation (section 60
+correction: the original draft said "three places - the server resolver, the shared
+public-path constants module, and this hook"; measured exactly, the literal
+`/api/features` appears in **two functional call sites** - `hooks/useFeatures.ts`
+(the fetch) and `lib/public-api-paths.ts` (the Edge-safe constant list) - plus one
+comment mention in `lib/features.ts`. There is no third functional caller.), and
+across `app`, `components`, `lib`, `contexts` and `hooks` no other module performs
+the request.
 
 ## 16. Complete page classification
 
@@ -294,6 +322,24 @@ this hook.
 | 18 | `app/tv/[id]/page.tsx` | yes | 900 | yes |
 | 19 | `app/watchlist/page.tsx` | yes | - | no |
 
+Section K vocabulary mapping, taken from the Production build route table (section 60
+addition; the build is the evidence, not this prose):
+
+| Classification | Pages |
+|---|---|
+| `STATIC` | `privacy` (server component, no request data), `_not-found`, `robots.txt` |
+| `STATIC_CLIENT_SHELL` (build `○`) | `/`, `ai-assistant`, `auth/signin`, `celebrities`, `favorites`, `feature-unavailable`, `genres`, `profile`, `search`, `top-rated`, `trending`, `watchlist` - prerendered HTML, personalization happens in the client after mount |
+| `ISR_SAFE` (build `●`) | `movie/[id]`, `tv/[id]` - static shell, `revalidate = 900`, `generateStaticParams()` returns `[]` so unknown ids render on demand and are reused for 900 s |
+| `DYNAMIC_REQUIRED` (build `ƒ`, server) | `admin` - server component reading admin-only state; dynamic on purpose |
+| `DYNAMIC_ACCIDENTAL` (build `ƒ`, client page) | `[mediaType]/[id]`, `actor/[id]`, `genre/[id]` - `use client` pages cannot export route segment config, so Next builds them dynamic |
+| `PERSONALIZED` | none at the server HTML level: every personalized surface is a static shell whose data is fetched client-side behind authentication |
+| `UNRESOLVED` | none |
+
+Pages intentionally kept dynamic outside the movie/TV priority scope:
+`[mediaType]/[id]`, `actor/[id]` (high-cardinality but their links already carry
+`prefetch={false}` and their supporting APIs carry CDN TTLs; converting them is not
+authorized by this phase's priority list) and `admin`.
+
 ## 17. Root-layout classification
 
 `app/layout.tsx` is an 88-line server component with no `use client` directive, and it
@@ -308,30 +354,35 @@ unchanged by Phase 25.
 
 | Property | Value |
 |---|---|
-| Build classification | `ƒ` Dynamic (server-rendered on demand, ISR) |
+| Build classification | `● SSG` - static shell, on-demand ISR (`dynamicParams` true, `revalidate = 900`) |
 | `revalidate` | 900 seconds |
-| Route size / First Load JS | 4.71 kB / 165 kB |
+| Route size / First Load JS | 4.7 kB / 165 kB |
 | Prefetch on related-title links | Disabled (`prefetch={false}`) |
 | API dependencies | detail, similar, recommendations, ai-similar (ai-similar stays private) |
 
-The page is not prerendered - the build output lists it as dynamic. Cost reduction
-comes from removing the prefetch fan-out and from CDN-caching the supporting JSON
-APIs, not from changing the page's rendering mode. The detail component itself was
-extracted into `app/movie/[id]/MovieDetailPage.tsx` (one of the 11 added files).
+The build reports `● (SSG)` for this route: the server wrapper hands every id to the
+on-demand path, where a first request renders and the result is reused for 900 s
+(section 60 correction - the original draft said "not prerendered ... `ƒ`", which
+contradicted the build it cited). Cost reduction combines three mechanisms: the
+removed prefetch fan-out, the CDN-cached supporting JSON APIs, and the ISR shell. The
+detail component itself was extracted into `app/movie/[id]/MovieDetailPage.tsx` (one
+of the 11 added files). No user-specific server HTML is produced: the shell contains
+no session, cookie, favorite or watchlist state, all of which is fetched client-side
+behind authentication.
 
 ## 19. TV page result
 
 | Property | Value |
 |---|---|
-| Build classification | `ƒ` Dynamic (server-rendered on demand, ISR) |
+| Build classification | `● SSG` - static shell, on-demand ISR (`dynamicParams` true, `revalidate = 900`) |
 | `revalidate` | 900 seconds |
-| Route size / First Load JS | 3.99 kB / 164 kB |
+| Route size / First Load JS | 3.98 kB / 164 kB |
 | Prefetch on related-title links | Disabled (`prefetch={false}`) |
 | API dependencies | detail, similar, recommendations |
 
-Same treatment as the movie page: dynamic render preserved, prefetch fan-out removed,
-supporting APIs made CDN-cacheable, component extracted to
-`app/tv/[id]/TVDetailPage.tsx`.
+Same treatment as the movie page: prefetch fan-out removed, supporting APIs made
+CDN-cacheable, ISR shell now reported as `● (SSG)` by the build (section 60
+correction), component extracted to `app/tv/[id]/TVDetailPage.tsx`.
 
 ## 20. Link components changed
 
@@ -543,6 +594,9 @@ After the minimal fixes, the same focused selection passed: **8 test files passe
 99 tests passed (99)**, exit 0, 42.25 s. No test was skipped, no assertion weakened, and
 no test deleted to reach green.
 
+Section 60 additions (five Section I contract tests, one RED/GREEN cycle) take the same
+selection to **8 files / 104 tests, all passing**, exit 0 - see sections 57, 60.
+
 ## 33. Focused tests
 
 | File | Kind |
@@ -556,18 +610,19 @@ no test deleted to reach green.
 | `tests/operational-security.test.ts` | modified - middleware matcher scope |
 | `tests/performance-m4.test.ts` | modified - cache-cost assumptions |
 
-Reconciliation note: the PR #28 body still carries an earlier figure of "5 affected
-files / 74 tests". That predates the final selection. The authoritative measured result
-is the 8-file / 99-test run above; the PR body is stale and should be refreshed (a body
-edit, not a history rewrite).
+Reconciliation note: the PR #28 body originally carried a figure of "5 affected
+files / 74 tests", which was stale even when written. The authoritative measured
+result is the 8-file selection above - **104 tests passing** after the section 60
+gap closure. The PR body was refreshed (a body edit, not a history rewrite) as part
+of section 60.
 
 ## 34. Full suite
 
 | Metric | Value |
 |---|---|
 | Test files | 2 failed / 51 passed (53) |
-| Tests | 5 failed / 654 passed (659) |
-| Duration | 97.19 s |
+| Tests | 5 failed / 659 passed (664); before the section 60 test additions it was 5 failed / 654 passed (659) - the same 5 failures either way |
+| Duration | 97-113 s across runs |
 | Exit code | 1 |
 
 Baseline comparison: the two failing files checked out at `d0184c9` produced 5 failed /
@@ -600,15 +655,19 @@ and is pre-existing.
 
 ## 36. Build and route output
 
-Build exit 0 in 91.28 s. The route table contains 65 rows: 50 dynamic (`ƒ`) and 15
-static (`○`).
+Build exit 0 - re-run twice during the section 60 reconciliation with identical
+results (26.3 s and 28.0 s compile; the earlier 91.28 s figure includes page-data
+collection on a cold cache). The route table contains 65 rows: **48 dynamic (`ƒ`),
+15 static (`○`), 2 SSG (`●`)**. The original draft of this section reported "50
+dynamic (`ƒ`) / 15 static", which folded the two `●` ISR routes into the dynamic
+count and printed `ƒ` for them; corrected per the actual build output.
 
 | Route | Size | First Load JS | Mode |
 |---|---|---|---|
-| `/movie/[id]` | 4.71 kB | 165 kB | `ƒ` |
-| `/tv/[id]` | 3.99 kB | 164 kB | `ƒ` |
+| `/movie/[id]` | 4.7 kB | 165 kB | `●` SSG + ISR 900 s |
+| `/tv/[id]` | 3.98 kB | 164 kB | `●` SSG + ISR 900 s |
 | `/api/features` | 251 B | 103 kB | `ƒ` |
-| `/robots.txt` | - | - | `○` |
+| `/robots.txt` | 251 B | 103 kB | `○` |
 
 `/robots.txt` became static in this phase, so the crawler policy is served without a
 function invocation.
@@ -743,7 +802,7 @@ The 11 added files, and why each exists:
 | `lib/**` | 1 | `lib/redis-health.ts` quota-exhaustion short-circuit |
 | `contexts/**` | 1 | Feature state through the existing context boundary |
 | `hooks/**` | 1 | `hooks/useFeatures.ts` TTL cache and single-flight fetch |
-| `middleware.ts` | 1 | Matcher narrowed to protected paths, `private, no-store` stamp |
+| `middleware.ts` | 1 | Matcher left byte-identical to baseline (already protected-only); feature self-fetch removed; `private, no-store` stamp added |
 | `tests/**` | 4 | Existing behaviour tests updated for the new contracts |
 
 ## 42. Files deleted
@@ -796,6 +855,13 @@ performed by this phase.
 | Secret scan | 0 findings, 0 sensitive files |
 | Gates at this commit | typecheck 0, lint 0 errors, build 0, focused 99/99 |
 
+**Subject deviation (disclosed).** The brief specified the commit subject
+`fix(perf): contain crawler-driven Vercel amplification`. The commit actually created
+and pushed carries `fix(perf): mitigate reflectionbot amplification and cache public
+routes`. Amending a pushed subject would require a force-push / history rewrite,
+which this phase explicitly forbids, so the original subject stands and the deviation
+is recorded here rather than corrected by rewriting history.
+
 ## 48. Commit B
 
 Commit B is the documentation commit containing this report and the Phase 25 appendix
@@ -830,6 +896,12 @@ non-force command. `git ls-remote` again returned a SHA equal to local HEAD, and
 
 No force-push, no history rewrite, and no push to `main` occurred at any point.
 
+The two reconciliation code commits (`4090069`, `a1993cf`) were pushed with the same
+non-force command in the same session and passed the same two checks (`ls-remote`
+equals local HEAD, `HEAD...@{u}` = `0\t0`). This documentation commit receives the
+identical treatment after it leaves this host; a file cannot witness its own push, so
+the verification for it lives in the session record and the PR timeline.
+
 ## 50. Pull Request
 
 | Field | Value |
@@ -839,13 +911,14 @@ No force-push, no history rewrite, and no push to `main` occurred at any point.
 | State | OPEN |
 | Draft | false |
 | Mergeable | MERGEABLE |
-| Commits at report time | 1 (`2ea4374`) |
+| Commits on branch | 6: `2ea4374`, `94810eb`, `4b5afa9`, `4090069`, `a1993cf`, and this documentation commit |
 | Base | `main` |
 | Head | `fix/reflectionbot-and-vercel-amplification-mitigation` |
 
-Commit B raises the commit count to 2. One accuracy defect is disclosed in section 33:
-the PR body still quotes "5 affected files / 74 tests" from an earlier draft, which the
-measured 8-file / 99-test run supersedes.
+Commit B raised the count to 2; the section 60 reconciliation added the two corrective
+code commits (`4090069` whitespace, `a1993cf` feature-gate contract tests) and this
+one. The PR body defect flagged in section 33 ("5 affected files / 74 tests") was
+fixed during section 60 by editing the PR body - no history was rewritten.
 
 ## 51. Preview
 
@@ -869,9 +942,17 @@ a deployed environment**. They are verified only as source contracts and as loca
 test/build results.
 
 After Commit B was pushed, a second deployment record appeared: `94810eb` ->
-`movie-recommendation-system-2trzdwqj1.vercel.app`, also in state `BLOCKED`.
-The project still reports `paused: true`, so no READY preview exists for either
-commit and no live response-headers verification was possible.
+`movie-recommendation-system-2trzdwqj1.vercel.app`, also in state `BLOCKED`/`UNKNOWN`.
+
+Section 60 verification (Vercel CLI, control-plane metadata only - no HTTP request was
+ever sent to a preview URL): every subsequent push produced one more preview record -
+`movie-recommendation-system-ilboylxas.vercel.app` (1 h old), and
+`movie-recommendation-system-6njuikwiw.vercel.app` (created by the reconciliation
+pushes). All of them report status `UNKNOWN` with build duration `?`, and
+`vercel inspect` shows a single `.` build line of `[0ms]` - i.e. the deployment was
+never built, exactly as the paused project (`paused = true`, section 6) predicts. The
+project still reports paused, so **no READY preview exists for any Phase 25 commit**
+and no live response-header verification was possible.
 
 ## 52. Merge authorization state
 
@@ -913,12 +994,17 @@ Mandated checkpoints and pass criteria, to be evaluated without post-hoc adjustm
 | First 15 minutes | Total CDN requests | <= 500 |
 | First 15 minutes | Function invocations | <= 200 |
 | First 15 minutes | Sustained rate | <= 10 requests/second, and explained |
+| First 15 minutes | Reflectionbot requests Allowed instead of Denied | 0 - any occurrence is investigated, consider re-pausing |
+| First 15 minutes | Redis quota errors | 0 - any occurrence is investigated |
 | First hour | CDN requests | <= 5,000 |
 | First hour | Function invocations | <= 1,000 |
 | First hour | Middleware redirects caused by automated clients | <= 100 |
 | First hour | Public cacheable routes | predominantly HIT after initial fill |
+| First hour | Repeated Redis quota failures | none |
 | First 24 hours | CDN requests | <= 25,000 |
 | First 24 hours | Function invocations | <= 10,000 |
+| First 24 hours | Reflectionbot observed after robots propagation and not denied | any occurrence is investigated |
+| First 24 hours | Redis usage growth | proportional to real user sessions |
 
 Checkpoints: 15 minutes, 1 hour, 24 hours, 72 hours. A breach is reported as a breach;
 thresholds are not to be relaxed after seeing results.
@@ -930,7 +1016,7 @@ thresholds are not to be relaxed after seeing results.
 | Cache headers unverified against the live CDN (preview BLOCKED) | Medium | UNVERIFIED - needs a deployed environment |
 | `robots.txt` is advisory; an ignoring client is unaffected | Medium | Accepted - Firewall plan is the enforcement path |
 | Redis quota still exhausted externally | Medium | Owner action outside this phase |
-| Detail pages remain dynamic per request (ISR 900) | Low | Accepted - prefetch fan-out removed instead |
+| Cold-id detail renders (ISR 900 s shell, `\u25cf`) | Low | Accepted - prefetch fan-out removed instead |
 | Pre-existing full-suite failures (4 README contract + 1 audit assertion) | Low | Pre-existing, disclosed, not fixed here |
 | 1 moderate `next` advisory with non-major fix available | Low | Disclosed, upgrade deferred |
 | Account 3x limit and unblock are owner-reported only | Low | UNVERIFIABLE via the APIs used here |
@@ -950,14 +1036,14 @@ cheaper to serve.
 | 4 | Prefetch evidence | `Prefetch: Yes`, `nxtPid`, stream path | PASS |
 | 5 | Movie amplification | 309 requests, 0% cached | PASS |
 | 6 | TV amplification | 116 requests, 0% cached | PASS |
-| 7 | Middleware amplification reduced | matcher narrowed to protected paths | PASS |
+| 7 | Middleware amplification reduced | feature self-fetch removed; matcher already protected-only (unchanged); protected links `prefetch={false}` | PASS - *wording corrected in section 60* |
 | 8 | Single server FeatureSettings source | `lib/features.ts` + store, route rewired | PASS |
 | 9 | No client DB/Redis/Node-only imports | gate test + 24 API / 7 page rewires | PASS |
-| 10 | `/api/features` deduplicated | TTL + single-flight hook, 3 references total | PASS |
+| 10 | `/api/features` deduplicated | TTL + single-flight hook, 2 functional call sites + 1 comment (was mis-stated as 3 call sites) | PASS |
 | 11 | Complete page classification | 19 modules classified | PASS |
 | 12 | Root layout classified, unmodified | 88-line server component, absent from manifest | PASS |
-| 13 | Movie page result documented | 4.71 kB / 165 kB, `ƒ`, 900 | PASS |
-| 14 | TV page result documented | 3.99 kB / 164 kB, `ƒ`, 900 | PASS |
+| 13 | Movie page result documented | 4.7 kB / 165 kB, `●` SSG + ISR 900 | PASS |
+| 14 | TV page result documented | 3.98 kB / 164 kB, `●` SSG + ISR 900 | PASS |
 | 15 | Link prefetch disabled | 26 `prefetch={false}` sites | PASS |
 | 16 | Complete API classification | 44 modules, 21 public / 23 other / 8 no-store | PASS |
 | 17 | Browser cache policy | `public, max-age=0, must-revalidate` | PASS |
@@ -970,19 +1056,19 @@ cheaper to serve.
 | 24 | Robots policy | Reflectionbot + private surfaces disallowed | PASS |
 | 25 | Firewall plan documented, not applied | section 30; no change published | PASS |
 | 26 | TDD RED with correct causes | 3 files, 6 failed / 22 passed | PASS |
-| 27 | TDD GREEN | 8 files, 99 passed | PASS |
-| 28 | Focused suite | exit 0, 42.25 s | PASS |
-| 29 | Full suite executed | 5 failed / 654 passed (659) | PASS |
+| 27 | TDD GREEN | 8 files, 104 passed (99 at first GREEN, +5 in section 60) | PASS |
+| 28 | Focused suite | exit 0, 8 files / 104 tests | PASS |
+| 29 | Full suite executed | 5 failed / 659 passed (664), same 5 pre-existing | PASS |
 | 30 | Pre-existing failures proven | identical 5 titles at `d0184c9` | PASS |
 | 31 | Coverage measured | 60.88 / 51.94 / 72.19 / 62.04 | PASS |
-| 32 | Build and route output | exit 0, 91.28 s, 65 rows (50 `ƒ` / 15 `○`) | PASS |
+| 32 | Build and route output | exit 0 (re-verified in section 60), 65 rows (48 `ƒ` / 15 `○` / 2 `●`) | PASS |
 | 33 | Audits executed | 1 moderate, fix `15.5.29`, 0 high/critical | PASS |
 | 34 | Secret scan | 0 matches, 0 sensitive files | PASS |
 | 35 | Changed files documented | section 39 manifest | PASS |
 | 36 | Commit A created | `2ea4374`, 62 files | PASS |
-| 37 | Commit B docs commit | this file + appendix, explicit staging | PARTIAL - created after this report |
-| 38 | Non-force push | Commit A verified `0 0`; Commit B after report | PARTIAL - Commit B pending at write time |
-| 39 | PR opened/updated | #28 OPEN, MERGEABLE, 1 commit | PASS |
+| 37 | Commit B docs commit | `94810eb`, this file + appendix, explicit staging | PASS |
+| 38 | Non-force push | every push: `ls-remote` == HEAD, `HEAD...@{u}` = `0\t0` | PASS |
+| 39 | PR opened/updated | #28 OPEN, MERGEABLE, 6 commits, body refreshed with measured numbers | PASS |
 | 40 | Preview verified READY | deployment BLOCKED by pause | BLOCKED |
 | 41 | Merge gate held | NOT AUTHORIZED, no merge attempt | PASS |
 | 42 | No Production deployment | branch not main, project paused | PASS |
@@ -994,6 +1080,11 @@ cheaper to serve.
 | 48 | No Redis external change | section 46 | PASS |
 | 49 | No push to main | branch-only push | PASS |
 | 50 | No squash/rebase | merge commit not used, history linear | PASS |
+| 51 | `git diff --check` clean on the branch | after `4090069`, exit 0 (44 trailing-whitespace findings removed) | PASS |
+| 52 | Section I required-test gaps (I.2, I.6, I.8, I.12, I.15) | RED (`expected ... 1 times, but got 2 times`) then GREEN, sections 31/60 | PASS |
+| 53 | PR body accuracy | refreshed in section 60: 8 files / 104 tests, baseline 5/79 (84) | PASS |
+| 54 | Two-logical-commit rule | 6 commits instead of 2 (forced commits forbidden) - DEVIATION, disclosed | DEVIATION DISCLOSED |
+| 55 | Commit A subject as specified by the brief | actual subject differs - DEVIATION, disclosed in section 47 | DEVIATION DISCLOSED |
 
 ## 58. Todo reconciliation
 
@@ -1006,6 +1097,21 @@ cheaper to serve.
 | t11 | Preview READY verification | BLOCKED - deployment `BLOCKED` by pause |
 | t12 | Firewall owner plan + monitoring thresholds documented | COMPLETE - sections 30 and 55 |
 | t13 | Acceptance table, reconciliation, honest limitations | COMPLETE - sections 56-59 |
+
+Session 2 (recheck after the first session stopped):
+
+| Item | Work | Status |
+|---|---|---|
+| s1 | Re-verify baseline, branch, HEAD, remote equality | COMPLETE - branch from `origin/main` `d0184c9`, `0\t0` |
+| s2 | Re-run typecheck / lint / focused / full / coverage / build | COMPLETE - all numbers re-measured, sections 32-37 |
+| s3 | Re-run audits + secret scan + `git diff --check` | COMPLETE - audits 1 moderate (unchanged), secret 0, diff-check initially FAILED |
+| s4 | Fix `git diff --check` (44 trailing-whitespace findings, 1 EOF blank line) | COMPLETE - commit `4090069` + this commit |
+| s5 | Close Section I required-test gaps I.2 / I.6 / I.8 / I.12 / I.15 | COMPLETE - RED then GREEN, 5 new tests, section 60 |
+| s6 | Correct report contradictions (build modes, matcher claim, references, counts, commits) | COMPLETE - corrected in place, each marked "section 60 correction" |
+| s7 | Re-audit every `<Link>` for prefetch policy | COMPLETE - 38 links, 26 with `prefetch={false}`, 10 low-cardinality public without, 2 allowlist-conditional |
+| s8 | Refresh PR #28 body | COMPLETE - measured figures, no history rewrite |
+| s9 | Preview READY | BLOCKED - project paused; every deployment record `UNKNOWN`, never built |
+| s10 | Merge authorization | OWNER ACTION REQUIRED - not attempted |
 
 t11 is not marked complete. It is the one requirement that cannot be satisfied while the
 project is paused, and it is reported as BLOCKED rather than quietly dropped.
@@ -1041,9 +1147,97 @@ unmet. Merge is the owner's decision, and the honest state of the phase is
 1. **根因已实测确认**：在 1,310 次 CDN 请求样本中，UA 为 `Reflectionbot/1.0 (+https://reflection.ai/bot)` 的请求占 994 次（75.9%），整体缓存命中率仅 27.7%；Firefox 240 次（18.5%，缓存 57.6%）；Edge Functions 32 次（0%）。历史 1,296,827 次请求只能标注为"高度可能"，**不能**声称为全部来自 Reflectionbot。
 2. **热点路由**：`/movie/[id]` 309 次（0% 缓存）、`/api/features` 134 次（0%）、`/tv/[id]` 116 次（0%），三者吞噬了主要函数调用成本；`/auth/signin`（100 次，100% 缓存）与 `/_next/image`（67 次，89.6% 缓存）成本极低。
 3. **已实施的抑制措施**：21 条公共确定性 GET 接口增加 CDN 缓存头（`Vercel-CDN-Cache-Control`，TTL 按数据类别 60 秒至 24 小时）；8 条私有接口与中间件统一 `private, no-store`；26 处链接关闭 `prefetch`；`/api/features` 改为客户端 TTL 缓存 + 单飞请求（每次会话仅一次）；`app/robots.ts` 对 Reflectionbot 与私有路径全站 disallow；Redis 客户端在配额耗尽时熔断，不再对已拒绝的命令反复计费。
-4. **门禁结果（实测）**：typecheck 退出码 0；lint 0 错误 / 93 条既有警告；build 退出码 0（91.28 秒，65 条路由 = 50 动态 + 15 静态）；聚焦套件 8 文件 99/99 全绿（42.25 秒）；完整套件 5 失败 / 654 通过（659），这 5 条在基线提交 `d0184c9` 上以**完全相同的标题**复现，属既有问题，非本阶段回归；覆盖率 60.88 / 51.94 / 72.19 / 62.04；依赖审计 1 条 moderate（`next <=15.5.28`，可升级至 `15.5.29`，非大版本），0 high / 0 critical；密钥扫描 0 命中。
+4. **门禁结果（实测）**：typecheck 退出码 0；lint 0 错误 / 93 条既有警告；build 退出码 0（65 条路由 = 48 动态 + 15 静态 + 2 SSG `●`，其中 `/movie/[id]`、`/tv/[id]` 为 ISR 900 秒外壳）；聚焦套件 8 文件 104/104 全绿；完整套件 5 失败 / 659 通过（664），这 5 条在基线提交 `d0184c9` 上以**完全相同的标题**复现，属既有问题，非本阶段回归；覆盖率 60.88 / 51.94 / 72.19 / 62.04；依赖审计 1 条 moderate（`next <=15.5.28`，可升级至 `15.5.29`，非大版本），0 high / 0 critical；密钥扫描 0 命中。
 5. **未完成与限制（如实披露）**：Vercel 项目仍处于手动暂停（`paused = true`），本提交的预览部署状态为 `BLOCKED`，因此**缓存头、单飞请求、robots 在真实 CDN 上的行为均未验证**；PR #28 为 OPEN / MERGEABLE，但**合并未获授权**；未改动任何环境变量、Firewall 规则、MongoDB 配置或 Redis 方案；账户 3 倍临时额度与解封为所有者口述，无法通过本次使用的 API 独立核实。
-6. **建议**：先恢复项目并生成预览完成验证，再按 15 分钟 / 1 小时 / 24 小时 / 72 小时四个检查点监控；Firewall 先启用"托管 AI 机器人 - 爬虫 Deny"与"UA 含 Reflectionbot 的自定义规则 Deny"，限流规则先观察 24 小时再启用；确认无异常后再由所有者决定合并与恢复生产。
+6. **预览门禁的现实障碍（如实披露）**：项目暂停会使新预览无法构建（本阶段所有 Phase 25 预览记录状态均为 `UNKNOWN`、构建时长 0ms，即从未被构建），因此"预览 READY 后再合并"只能由所有者二选一：要么临时 Resume 项目、仅用于生成并验证预览（随后立即重新暂停），要么明确接受"预览暂停保留"（U 允许的第三种门禁状态）；二者均超出本阶段权限。
+7. **建议**：先恢复项目并生成预览完成验证，再按 15 分钟 / 1 小时 / 24 小时 / 72 小时四个检查点监控；Firewall 先启用"托管 AI 机器人 - 爬虫 Deny"与"UA 含 Reflectionbot 的自定义规则 Deny"，限流规则先观察 24 小时再启用；确认无异常后再由所有者决定合并与恢复生产。
 
 本报告不声称该方案能阻止所有滥用客户端，只声称它移除了本阶段实测到的放大路径，并显著降低了每条剩余请求的边际成本。
 
+
+---
+
+## 60. Section 60 - Recheck session: corrections, gap closure, disclosed deviations
+
+This section records the work of the second (recheck) session, which was opened after
+the first session stopped. Nothing in sections 1-59 was silently deleted; every number
+below was re-measured on this host, and every correction made to an earlier section is
+marked inline with a "section 60 correction" phrase.
+
+### 60.1 Full gate re-verification (re-run, same host)
+
+| Gate | Result |
+|---|---|
+| `git fetch origin main` | `origin/main` = `d0184c9` (unchanged since baseline) |
+| Branch / HEAD / remote | `fix/reflectionbot-and-vercel-amplification-mitigation`, `HEAD...@{u}` = `0	0`, non-force pushes only |
+| Typecheck | exit 0 |
+| Lint | 0 errors, 93 warnings - identical to the pre-change baseline, no increase |
+| Focused suites (8 files) | 104/104 passing (99 before the section 60 test additions) |
+| Full suite | 2 failed files / 51 passed; 5 failed / 659 passed (664); the same pre-existing 5 |
+| Coverage | 60.88% stmts / 51.94% branches / 72.19% funcs / 62.04% lines - unchanged, no regression |
+| Production build | exit 0; 65 routes = 48 `ƒ` + 15 `○` + 2 `●`; `robots.txt` static |
+| Production audit | 0 critical / 0 high / 1 moderate (`next <=15.5.28`, fix `15.5.29` non-major) |
+| Full audit (`--omit=dev` off) | identical: 1 moderate |
+| Secret scan (6 credential patterns over every added line) | 0 hits |
+| `git diff --check` | FAILED first (44 trailing-whitespace lines in the two extracted detail views, 1 EOF blank line in this report), exit 0 after `4090069` and this commit |
+| Changed-file inventory | 64 files: 51 modified, 13 added (11 code/test + 2 documentation), 0 deleted, +4697 / -1694 |
+| Package / lockfile / env changes | none |
+| Link prefetch re-audit | 38 `<Link>` sites: 26 with `prefetch={false}`, 2 nav entries behind the `PREFETCH_ALLOWED` allowlist, 10 without prefetch that are exclusively low-cardinality public targets (`/`, `/privacy`, `/trending`) - prompt J.8 compliant |
+
+### 60.2 Corrections applied to earlier sections
+
+| Section | What was wrong | Correction |
+|---|---|---|
+| 11, 18, 19, 36 | build mode printed as `ƒ` for `/movie/[id]` and `/tv/[id]`; "does not change the rendering mode" contradicted the build and the PR body | both routes are `● (SSG)` with on-demand ISR at 900 s; the pre-change classification was the accidental `ƒ` |
+| 36 | "50 dynamic / 15 static" | 48 `ƒ` + 15 `○` + 2 `●` (65 rows); `/robots.txt` is 251 B / 103 kB, not `-` |
+| 12, 41, row 7 of section 57 | claimed the matcher was narrowed | the matcher is byte-identical to `d0184c9`; the real middleware changes are the removed feature self-fetch, the `private, no-store` stamp, and protected-link prefetch suppression elsewhere |
+| 15, row 10 | "`/api/features` in three places including the server resolver" | two functional call sites plus one comment in `lib/features.ts` |
+| 16 | no Section K vocabulary | explicit classification table added (`STATIC` / `STATIC_CLIENT_SHELL` / `ISR_SAFE` / `DYNAMIC_REQUIRED` / `DYNAMIC_ACCIDENTAL` / `PERSONALIZED` / none `UNRESOLVED`) |
+| 33, 50, row 39 | stale PR body figures, commit count | PR body refreshed (8 files / 104 tests, baseline 5 failed / 79 passed of 84); 6 commits |
+| 34 | 654 / 659 | 5 failed / 659 passed (664) after the new tests |
+| 51 | preview state | 5 preview records exist for the branch (`4use6dzba`, `2trzdwqj1`, `ilboylxas`, `6njuikwiw`, and the record for this commit); all `UNKNOWN`, never built (`vercel inspect`: `[0ms]`), no READY preview |
+| 55 | threshold table missing rows mandated by section X | added: Reflectionbot-Allowed (15 min), Redis quota error (15 min / 1 h), 24 h Reflectionbot-not-denied, 24 h Redis-growth |
+| 57 rows 37/38 | PARTIAL placeholders | PASS with verified SHAs |
+
+### 60.3 Section I required-test gap closure (TDD)
+
+The first session's focused suites did not cover five of the fifteen Section I
+required tests. Added to `tests/phase25-feature-gate.test.ts`:
+
+| Test | Requirement | RED evidence |
+|---|---|---|
+| concurrent gate checks share one DB read | I.12 | `AssertionError: expected "vi.fn()" to be called 1 times, but got 2 times` - correct reason (no coalescing existed) |
+| admin update changes next gate decision | I.6 | passed after the in-flight design (promise clears on settle; no TTL cache) |
+| disabled decision precedes `consumeQuota` | I.2 | source-order assertion, passed |
+| Redis not part of gate path | I.8 | passed - `lib/features.ts` / `lib/features-store.ts` reference no Redis module |
+| no console output in feature code | I.15 | passed |
+
+Implementation (commit `a1993cf`): `readFeatureState()` coalesces concurrent calls
+into one in-flight evaluation; the promise clears on settle so admin propagation is
+untouched. GREEN: 20/20 in the file, 104/104 across the focused selection.
+
+### 60.4 Disclosed deviations
+
+1. **Commit count.** The brief specifies two logical commits. The branch carries six:
+   Commit A (`2ea4374`), Commit B (`94810eb`), the pinning commit (`4b5afa9`), the
+   whitespace gate fix (`4090069`), the gate-contract fix (`a1993cf`), and this docs
+   reconciliation commit. Squashing or rebasing them into two would require the
+   force-push / history rewrite / squash / rebase that the same brief forbids, and the
+   first two are already on the remote. The debris is therefore disclosed, not hidden:
+   forced-history operations were treated as the harder constraint.
+2. **Commit A subject.** See section 47 - actual subject differs from the brief's
+   specified subject; amending a pushed subject is a history rewrite.
+3. **Preview gate (U.3) cannot be satisfied by this phase.** Building a preview
+   requires the project to be resumed (observed: every deployment record stays
+   `UNKNOWN` / 0 ms while `paused = true`). Resume is an owner-only action, so the
+   pre-merge gate resolves to one of the two owner decisions spelled out in Chinese
+   item 6 above: temporary resume for preview verification, or an explicit
+   preview-only-hold acceptance (U.8 option c).
+4. **Audits are not zero.** 1 moderate (`next`), disclosed, upgrade out of scope.
+
+### 60.5 Status at the end of the recheck session
+
+**PASS WITH WARNINGS - MERGE NOT AUTHORIZED - PROJECT STILL PAUSED - PREVIEW BLOCKED
+(OWNER ACTION).** All local gates pass with the numbers above; the only unmet
+requirement is the deployed-environment preview, which no code change can produce
+while the project is paused.
