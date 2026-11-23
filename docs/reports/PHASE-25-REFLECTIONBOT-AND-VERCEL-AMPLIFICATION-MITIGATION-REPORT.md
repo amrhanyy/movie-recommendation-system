@@ -807,13 +807,26 @@ A commit cannot contain its own SHA, so Commit B's SHA is recorded in the branch
 and the PR timeline rather than inside this file. Subject:
 `docs: record Reflectionbot and Vercel mitigation`.
 
+Commit B was created as `94810eb` (parent `2ea4374`): 2 files changed, 1921 insertions, 0 deletions. A file cannot truthfully contain the SHA of the commit that creates it, so this identity is recorded by the later corrective commit rather than inside Commit B itself.
+
 ## 49. Push
 
 Commit A was pushed non-force to
-`origin/fix/reflectionbot-and-vercel-amplification-mitigation`, and the remote tip was
-verified equal to local HEAD (`rev-list --left-right --count` returned `0 0`). Commit B
-is pushed with the same non-force command after it is created; its result is reported in
-the execution summary, not inside this file.
+`origin/fix/reflectionbot-and-vercel-amplification-mitigation`. The remote tip was
+verified equal to local HEAD by two independent checks:
+
+- `git ls-remote origin refs/heads/fix/reflectionbot-and-vercel-amplification-mitigation`
+  returned the same full SHA as `git rev-parse HEAD` (`2ea4374` at that time);
+- `git rev-list --left-right --count HEAD...@{u}` returned `0	0`.
+
+The three-dot form is stated explicitly on purpose. On this host the git build
+(2.50.1, Windows) returns a non-zero right-hand count for the two-argument form even when
+both arguments name the same commit, so the two-dot invocation is not valid evidence here
+and was not used to support this claim.
+
+Commit B (`94810eb`, parent `2ea4374`, 2 files, +1921 / -0) was pushed with the same
+non-force command. `git ls-remote` again returned a SHA equal to local HEAD, and
+`HEAD...@{u}` returned `0	0`. PR #28 then reported 2 commits with head `94810eb`.
 
 No force-push, no history rewrite, and no push to `main` occurred at any point.
 
@@ -854,6 +867,11 @@ executed. Specifically, the live CDN behaviour of the new cache headers, the liv
 `/api/features` single-fetch behaviour, and the live robots response are **UNVERIFIED in
 a deployed environment**. They are verified only as source contracts and as local
 test/build results.
+
+After Commit B was pushed, a second deployment record appeared: `94810eb` ->
+`movie-recommendation-system-2trzdwqj1.vercel.app`, also in state `BLOCKED`.
+The project still reports `paused: true`, so no READY preview exists for either
+commit and no live response-headers verification was possible.
 
 ## 52. Merge authorization state
 
