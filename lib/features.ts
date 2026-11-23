@@ -33,6 +33,13 @@ export const FAIL_CLOSED_FEATURES: Readonly<SystemFeatures> = Object.freeze({ ai
 
 const DEFAULT_TIMEOUT_MS = 1500
 
+// Phase 25 (I.12): one in-flight gate evaluation at a time. Concurrent checks
+// (several handlers evaluating the same request in the same runtime) share the
+// work instead of issuing parallel identical reads. This is deliberately NOT a
+// time-based cache: the promise is cleared the moment it settles, so the very
+// next admin toggle decision reads the store again (I.6 propagation).
+let inflightState: Promise<FeatureState> | null = null
+
 type Deadline<T> = { timedOut: false; value: T } | { timedOut: true }
 
 async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<Deadline<T>> {
@@ -49,11 +56,20 @@ async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<
   }
 }
 
-export async function readFeatureState(
+export function readFeatureState(
   options: { timeoutMs?: number } = {}
 ): Promise<FeatureState> {
+  if (inflightState) return inflightState
+
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
+  inflightState = resolveFeatureState(timeoutMs).finally(() => {
+    inflightState = null
+  })
+  return inflightState
+}
+
+async function resolveFeatureState(timeoutMs: number): Promise<FeatureState> {
   try {
     const connect = await withDeadline(connectToMongoDB(), timeoutMs)
     if (connect.timedOut) {

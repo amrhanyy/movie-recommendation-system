@@ -105,6 +105,71 @@ describe('Phase 25 G: Edge middleware no longer self-fetches feature state', () 
   });
 });
 
+describe('Phase 25 I: gate contract completeness', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    store.findLatestFeatureDoc.mockReset();
+    db.connect.mockReset();
+  });
+
+  it('shares one database read between concurrent gate checks', async () => {
+    // I.12: concurrent checks must not multiply MongoDB operations.
+    db.connect.mockResolvedValue(undefined);
+    store.findLatestFeatureDoc.mockResolvedValue({ features: { aiAssistant: false } });
+    const { readFeatureState } = await import('@/lib/features');
+
+    const [a, b] = await Promise.all([readFeatureState(), readFeatureState()]);
+    expect(store.findLatestFeatureDoc).toHaveBeenCalledTimes(1);
+    expect(a.features.aiAssistant).toBe(false);
+    expect(b.features.aiAssistant).toBe(false);
+  });
+
+  it('reflects an admin update on the next gate decision', async () => {
+    // I.6: a subsequent read observes the newly written document; the
+    // concurrency deduplication must not become a stale cache.
+    db.connect.mockResolvedValue(undefined);
+    store.findLatestFeatureDoc.mockResolvedValueOnce({ features: { aiAssistant: true } });
+    const { readFeatureState, isAiAssistantEnabled } = await import('@/lib/features');
+
+    const first = await readFeatureState();
+    expect(isAiAssistantEnabled(first)).toBe(true);
+
+    store.findLatestFeatureDoc.mockResolvedValueOnce({ features: { aiAssistant: false } });
+    const second = await readFeatureState();
+    expect(isAiAssistantEnabled(second)).toBe(false);
+    expect(store.findLatestFeatureDoc).toHaveBeenCalledTimes(2);
+  });
+
+  it('decides the disabled state before any quota consumption', () => {
+    // I.2: the disabled answer must precede consumeQuota, so a disabled
+    // feature never reserves user quota.
+    const source = read('app/api/ai-recommendations/route.ts');
+    const gateAt = source.indexOf('readFeatureState(');
+    const quotaAt = source.indexOf('consumeQuota(');
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(quotaAt).toBeGreaterThan(gateAt);
+  });
+
+  it('never consults Redis when evaluating the gate', () => {
+    // I.8: Redis failure cannot bypass the gate because Redis is not part of
+    // the decision path at all.
+    for (const file of ['lib/features.ts', 'lib/features-store.ts']) {
+      expect(read(file)).not.toMatch(/redis/i);
+    }
+  });
+
+  it('logs no feature state, secret, or user data', () => {
+    // I.15.
+    for (const file of [
+      'lib/features.ts',
+      'lib/features-store.ts',
+      'app/api/features/route.ts',
+    ]) {
+      expect(read(file)).not.toMatch(/console\.(log|error|warn|info|debug)/);
+    }
+  });
+});
+
 describe('Phase 25 G: the Node route handler owns the feature gate', () => {
   it('gates after auth and before DB reads, cache writes, TMDB and Gemini', () => {
     const source = read('app/api/ai-recommendations/route.ts');
