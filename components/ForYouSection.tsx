@@ -154,8 +154,7 @@ export function ForYouSection() {
             <Link
               href={`/${item.media_type}/${item.id}`}
               aria-label={`View details for ${item.title || item.name}`}
-              className="group relative block focus:outline-none"
-            >
+              className="group relative block focus:outline-none" prefetch={false}>
               <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-2
                         border border-gray-700/50">
                 <Image

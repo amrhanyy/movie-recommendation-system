@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
 import { redisCache } from '@/lib/cache'
 import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace'
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const BASE_URL = 'https://api.themoviedb.org/3'
@@ -41,7 +42,7 @@ export async function GET(
       return await actorRes.json()
     }, ACTOR_TTL);
 
-    return NextResponse.json(actorData)
+    return NextResponse.json(actorData, { headers: publicCacheHeaders('details') })
   } catch (error) {
     console.error('Error in actor route:', error)
     return NextResponse.json(

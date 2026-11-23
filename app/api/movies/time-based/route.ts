@@ -5,6 +5,7 @@ import connectToMongoDB from '@/lib/mongodb';
 import { WatchlistModel } from '@/lib/models/WatchlistModel';
 import { FavoritesModel } from '@/lib/models/FavoritesModel';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const durationRanges = {
   quick: {
@@ -188,7 +189,7 @@ export async function GET(request: NextRequest) {
         range: `${min}-${max} minutes`,
         description: durationRanges[duration as keyof typeof durationRanges].description
       }
-    })
+    }, { headers: publicCacheHeaders('trending') })
   } catch (error) {
     console.error('Error fetching time-based movies')
     return NextResponse.json({ error: 'Failed to fetch movies' }, { status: 500 })

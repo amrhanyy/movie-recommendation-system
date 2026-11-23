@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import redisCache from '../../../../lib/cache';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { redactSensitive } from '@/lib/ai-security';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
@@ -123,7 +124,7 @@ export async function GET(
       1800
     );
 
-    return NextResponse.json(combinedData)
+    return NextResponse.json(combinedData, { headers: publicCacheHeaders('details') })
   } catch (error: unknown) {
     console.error('Movie details error:', error)
     return NextResponse.json(

@@ -67,11 +67,11 @@ export default function ProfilePage() {
         <div className="bg-gray-800/30 rounded-3xl border border-gray-700/50 p-6
                       shadow-[0_0_50px_-12px] shadow-cyan-500/10">
           <div className="flex items-center justify-between mb-4">
-            <Link href="/watchlist" className="group flex items-center gap-2 hover:text-cyan-400 transition-colors">
+            <Link href="/watchlist" className="group flex items-center gap-2 hover:text-cyan-400 transition-colors" prefetch={false}>
               <h2 className="text-xl font-semibold text-white group-hover:text-cyan-400 transition-colors">Your Watchlist</h2>
               <ExternalLink className="w-4 h-4 text-gray-400 group-hover:text-cyan-400 transition-colors" />
             </Link>
-            <Link href="/watchlist" className="text-sm text-cyan-400 hover:underline">
+            <Link href="/watchlist" className="text-sm text-cyan-400 hover:underline" prefetch={false}>
               View all
             </Link>
           </div>
@@ -82,12 +82,12 @@ export default function ProfilePage() {
         <div className="bg-gray-800/30 rounded-3xl border border-gray-700/50 p-6
                 shadow-[0_0_50px_-12px] shadow-cyan-500/10">
           <div className="flex items-center justify-between mb-4">
-            <Link href="/favorites" className="group flex items-center gap-2 hover:text-pink-400 transition-colors">
+            <Link href="/favorites" className="group flex items-center gap-2 hover:text-pink-400 transition-colors" prefetch={false}>
               <Heart className="w-5 h-5 fill-current text-pink-500 group-hover:text-pink-500" />
               <h2 className="text-xl font-semibold text-white group-hover:text-pink-400 transition-colors">Your Favorites</h2>
               <ExternalLink className="w-4 h-4 text-gray-400 group-hover:text-pink-400 transition-colors" />
             </Link>
-            <Link href="/favorites" className="text-sm text-cyan-400 hover:underline">
+            <Link href="/favorites" className="text-sm text-cyan-400 hover:underline" prefetch={false}>
               View all
             </Link>
           </div>

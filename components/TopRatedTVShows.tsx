@@ -103,8 +103,7 @@ export function TopRatedTVShows() {
               <Link
                 href={`/tv/${show.id}`}
                 aria-label={`View details for ${show.name}`}
-                className="group/item block focus:outline-none"
-              >
+                className="group/item block focus:outline-none" prefetch={false}>
                 <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3
                             transform group-hover/item:scale-105 transition-all duration-300
                             border border-gray-700/50">

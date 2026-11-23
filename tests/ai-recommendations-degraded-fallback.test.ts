@@ -228,6 +228,19 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', vi.fn());
 });
 
+// Phase 25 (G): the route now consults the shared server-only feature service
+// after auth. These suites exercise unrelated route behavior, so the gate is
+// pinned to the documented default (enabled) instead of touching Mongo.
+vi.mock('@/lib/features', () => ({
+  readFeatureState: vi.fn().mockResolvedValue({
+    ok: true,
+    source: 'database',
+    features: { aiAssistant: true },
+  }),
+  isAiAssistantEnabled: (state: { ok: boolean; features: { aiAssistant: boolean } }) =>
+    state.ok && state.features.aiAssistant === true,
+}));
+
 describe('Phase 20 section 8: ai-recommendations TMDB degraded fallback', () => {
   it('persistent 503 (AI_UNAVAILABLE) degrades to the TMDB popular fallback', async () => {
     let geminiCalls = 0;

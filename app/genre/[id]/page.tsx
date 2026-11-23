@@ -206,8 +206,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
                 key={item.uniqueKey || item.id}
                 href={`/${contentType}/${item.id}`}
                 aria-label={`View details for ${item.title || item.name || 'title'}`}
-                className="group relative aspect-[2/3] rounded-lg overflow-hidden block focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
-              >
+                className="group relative aspect-[2/3] rounded-lg overflow-hidden block focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500" prefetch={false}>
                 <Image
                   src={`https://image.tmdb.org/t/p/w500${item.poster_path}`}
                   alt={item.title || item.name || ''}
@@ -311,8 +310,7 @@ export default function GenrePage({ params }: { params: Promise<{ id: string }> 
             key={item.uniqueKey || item.id}
             href={`/${contentType}/${item.id}`}
             aria-label={`View details for ${item.title || item.name || 'title'}`}
-            className="group relative aspect-[2/3] rounded-lg overflow-hidden block focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
-          >
+            className="group relative aspect-[2/3] rounded-lg overflow-hidden block focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500" prefetch={false}>
             <Image
               src={`https://image.tmdb.org/t/p/w500${item.poster_path}`}
               alt={item.title || item.name || ''}

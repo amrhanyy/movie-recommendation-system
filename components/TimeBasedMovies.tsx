@@ -202,8 +202,7 @@ export function TimeBasedMovies() {
                   href={`/movie/${movie.id}`}
                   aria-label={`View details for ${movie.title}`}
                   className="group relative bg-gray-800/50 rounded-lg overflow-hidden
-                           hover:shadow-lg transition-all duration-300 block focus:outline-none"
-                >
+                           hover:shadow-lg transition-all duration-300 block focus:outline-none" prefetch={false}>
                   <div className="relative aspect-[2/3]">
                     <Image
                       src={`https://image.tmdb.org/t/p/w500${movie.poster_path}`}

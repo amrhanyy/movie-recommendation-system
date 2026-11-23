@@ -1,6 +1,6 @@
 'use client'
 
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { createContext, useContext, useState } from 'react'
 
 // Map of language codes to their display names
 // M6 i18n honesty: only locales with a real translation catalog below are
@@ -94,29 +94,12 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
   // system language is resolved in the background (Phase 3: no blocking gate).
   const [language, setLanguage] = useState('en-US')
 
-  useEffect(() => {
-    // Best-effort: adopt a server-configured default language without holding
-    // the DOM hostage. Failures are silent (we simply keep en-US).
-    let cancelled = false
-    const fetchSystemLanguage = async () => {
-      try {
-        const response = await fetch('/api/features')
-        if (response.ok) {
-          const data = await response.json()
-          if (!cancelled && data.content?.defaultLanguage) {
-            setLanguage(data.content.defaultLanguage)
-          }
-        }
-      } catch {
-        // Ignore — keep the default language.
-      }
-    }
-
-    fetchSystemLanguage()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  // Phase 25 (H): this provider no longer reads the feature endpoint. The language
+  // default is a client concern with a safe constant fallback (en-US), and the
+  // feature endpoint never returned a `content.defaultLanguage` field, so that
+  // request was dead weight that doubled the feature-endpoint traffic of every
+  // page load. A configured locale, if one is ever needed, belongs in an
+  // explicit locale source - not in the feature-flag endpoint.
   
   // Function to translate a key
   const t = (key: string): string => {

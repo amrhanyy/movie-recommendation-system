@@ -27,6 +27,14 @@ const navItems: NavItem[] = [
   { href: '/ai-assistant', label: 'aiAssistant', icon: Film, feature: 'aiAssistant' },
 ]
 
+// Phase 25 (K): low-cardinality public destinations keep Next's default
+// prefetch. Everything else in this list is a per-user page (/watchlist,
+// /favorites) or a gated feature page (/ai-assistant), so it must never be
+// prefetched. The allowlist is explicit: a future entry is opted OUT by
+// default rather than silently prefetched.
+const PREFETCH_ALLOWED = new Set(['/', '/trending', '/top-rated', '/genres'])
+
+
 // Core items that are always shown (even during loading)
 const coreItems = ['home', 'trending', 'topRated', 'genres', 'watchlist', 'favorites']
 
@@ -61,8 +69,7 @@ export function FeatureNavItems() {
               isActive 
                 ? "text-white bg-white/15 font-semibold shadow-sm" 
                 : "text-gray-300 hover:text-white hover:bg-white/10"
-            )}
-          >
+            )} prefetch={PREFETCH_ALLOWED.has(href) ? undefined : false}>
             {/* Active page indicator */}
             {isActive && (
               <span className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 to-transparent opacity-50" />

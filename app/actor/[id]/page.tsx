@@ -208,8 +208,7 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                         key={`movie-${movie.id}-${index}-${movie.character?.replace(/\s+/g, '')}`}
                         href={`/movie/${movie.id}`}
                         aria-label={`View details for ${movie.title}`}
-                        className="group block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
-                      >
+                        className="group block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" prefetch={false}>
                         <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                                     transform group-hover:scale-105 transition-all duration-300 
                                     border border-gray-700/50">
@@ -259,8 +258,7 @@ export default function ActorPage({ params }: { params: Promise<{ id: string }> 
                         key={`tv-${show.id}-${index}-${show.character?.replace(/\s+/g, '')}`}
                         href={`/tv/${show.id}`}
                         aria-label={`View details for ${show.name}`}
-                        className="group block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
-                      >
+                        className="group block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" prefetch={false}>
                         <div className="relative aspect-[2/3] rounded-xl overflow-hidden mb-3 
                                     transform group-hover:scale-105 transition-all duration-300 
                                     border border-gray-700/50">

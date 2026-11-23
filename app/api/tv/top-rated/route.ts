@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import redisCache from '../../../../lib/cache';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const BASE_URL = 'https://api.themoviedb.org/3'
@@ -33,7 +34,7 @@ export async function GET(request: NextRequest) {
       21600
     );
     
-    return NextResponse.json(data)
+    return NextResponse.json(data, { headers: publicCacheHeaders('trending') })
   } catch (error) {
     return NextResponse.json(
       { error: 'Failed to fetch top rated TV shows' }, 

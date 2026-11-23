@@ -3,6 +3,7 @@ import redisCache from '../../../../../lib/cache';
 import tmdbClient from '@/lib/tmdb';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { tmdbIdSchema } from '@/lib/security/schemas';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 export async function GET(
   request: NextRequest,
@@ -37,7 +38,7 @@ export async function GET(
       3600
     );
 
-    return NextResponse.json(data)
+    return NextResponse.json(data, { headers: publicCacheHeaders('similar') })
   } catch (error) {
     console.error('Error fetching TV recommendations:', error);
     return NextResponse.json(
