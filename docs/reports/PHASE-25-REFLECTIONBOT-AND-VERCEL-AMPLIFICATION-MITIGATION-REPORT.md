@@ -1386,24 +1386,33 @@ application and reran no suite, build, audit, smoke or readiness probe.
 - Build route classification from the Preview build events: 15 static (○), 2 SSG (●),
   48 dynamic (ƒ); `/movie/[id]` 4.68 kB / 165 kB and `/tv/[id]` 3.98 kB / 164 kB, both
   with `revalidate = 900`; the `DYNAMIC_ACCIDENTAL` trio is unchanged (section 36).
-- Bounded checks (exactly 5 requests, no crawling): `/robots.txt` 200 with `s-maxage=300`,
-  `X-Robots-Tag: noindex`, Reflectionbot `Disallow: /`; `/api/genres` 200 MISS then 200 HIT
-  (`Age: 3`, byte-identical bodies); `/api/favorites` 401
-  `{"error":"Authentication required"}` with `private, no-store`, `source: edge-middleware`
-  and `cache: ""` - the authentication boundary working, not a degraded deployment; that
-  401 proves no provider call, no quota consumption and no data change, and it is not
-  acceptance evidence; `/api/features` 200 with `private, no-store` and a database-sourced
-  payload. Deployment logs contained exactly those 5 requests, all `level: info`, with 0
-  secret-like and 0 error/retry-like strings.
+- Bounded checks (exactly 5 requests, no crawling): `/robots.txt` 200 with
+  `Cache-Control: public, max-age=0, must-revalidate`, `X-Robots-Tag: noindex` (Vercel's
+  automatic Preview noindex header), `x-vercel-cache: PRERENDER`, Reflectionbot `Disallow: /`;
+  `/api/genres` 200 MISS then 200 HIT (`Age: 3`, byte-identical bodies); `/api/favorites` 401
+  `{"error":"Authentication required"}` observed with `Cache-Control: public, max-age=0, must-revalidate`,
+  logged as `source: edge-middleware`, `cache: ""` - the authentication boundary working, not a
+  degraded deployment; that 401 proves no provider call, no quota consumption and no data change,
+  and it is not acceptance evidence; `/api/features` 200 with `private, no-store` and a
+  database-sourced
+  payload. A deployment-ID log query returned 3 records covering the robots and both genres
+  checks (static PRERENDER, serverless MISS with [BOOT], static HIT), all `level: info`, with 0
+  secret-like and 0 error/retry-like strings; the favorites 401 and features 200 responses were
+  captured directly and no log records for them were separately enumerated.
 
 ### 61.4 Cache headers (verified live)
 
-- Genres: `Cache-Control: public, max-age=0, must-revalidate` plus
-  `Vercel-CDN-Cache-Control: s-maxage=3600, stale-while-revalidate=86400`; the observed
-  MISS→HIT transition (Age 3 s) is the platform consuming the CDN directive.
-- Robots: `Cache-Control: s-maxage=300`, `X-Robots-Tag: noindex`, `x-vercel-cache:
-  PRERENDER`.
-- Private surfaces (favorites, features): `private, no-store`.
+- Genres: response `Cache-Control: public, max-age=0, must-revalidate` plus source-level
+  `Vercel-CDN-Cache-Control: s-maxage=3600, stale-while-revalidate=86400` (`lib/public-cache.ts`;
+  the CDN directive is consumed by the platform and is not echoed to the client); the observed
+  MISS→HIT transitions (`Age: 3` in the Preview, `Age: 5` in Production) are the platform
+  consuming the CDN directive.
+- Robots: `Cache-Control: public, max-age=0, must-revalidate`, `x-vercel-cache: PRERENDER`,
+  `X-Robots-Tag: noindex` (Vercel's automatic Preview noindex header).
+- Private surfaces: `/api/features` 200 carries `private, no-store`; the favorites middleware
+  401 was observed with `Cache-Control: public, max-age=0, must-revalidate` - `middleware.ts:35-38`
+  returns that 401 without a cache header, while the `private, no-store` stamp at
+  `middleware.ts:43-44` applies only to authenticated pass-through responses.
 - The section 56 row "Cache headers unverified against the live CDN" is resolved.
 
 ### 61.5 Merge (Merge Commit, two parents)
@@ -1447,7 +1456,7 @@ timestamps (the local clock runs ~2 m 15 s behind server UTC).
 | 2 | 19:40:21Z | `/api/health/ready` | 200, exactly 88 bytes: `{"status":"ready","components":{"config":"ready","database":"ready","redis":"optional"}}`, `Cache-Control: no-store` |
 | 3 | 19:40:26Z | `/api/genres` | 200, 2,447 B, `MISS`, public browser + CDN directives |
 | 4 | 19:40:31Z | `/api/genres` | 200, **HIT**, `Age: 5`, body byte-identical to request 3 (`cmp` 0), log record `source: static` (no function invocation) |
-| 5 | 19:40:36Z | `/robots.txt` | 200, 254 B, `s-maxage=300`, `X-Robots-Tag: noindex`, Reflectionbot `Disallow: /`, private-path disallows, no sitemap |
+| 5 | 19:40:36Z | `/robots.txt` | 200, 254 B, `Cache-Control: public, max-age=0, must-revalidate`, `x-vercel-cache: PRERENDER`, no `X-Robots-Tag` in Production (the Preview carries Vercel's automatic noindex), Reflectionbot `Disallow: /`, private-path disallows, no sitemap |
 
 A first attempt at 19:35:41-19:36:06Z failed before sending any request: `curl: (23)`
 (writing the header capture to an MSYS `/tmp` path), all five HTTP codes read 000 and all
@@ -1477,9 +1486,9 @@ Window A source split: `serverless` 11, `static` 21, `edge-middleware` 1; cache 
 
 Window B = smoke-end `[1795549236614, +900000]` (a live-observation window holding no
 traffic after the smoke; its inclusive start boundary captures the robots record from
-61.7): 1 record, 0 errors, 0 quota-like, 0 Reflectionbot strings. A fresh re-query after the gate returned only the five
-smoke records, proving **zero Production requests from 19:40:37Z until the re-query** (~35
-minutes). The full-hour picture from the two censuses: 33 requests at 19:14:59.8-19:15:01.9Z,
+61.7): 1 record, 0 errors, 0 quota-like, 0 Reflectionbot strings. A fresh re-query after the gate
+(20:04:17Z-20:04:52Z) returned only the five smoke records, proving **zero Production requests from
+19:40:37Z until that re-query** (~24 minutes). The full-hour picture from the two censuses: 33 requests at 19:14:59.8-19:15:01.9Z,
 then nothing until the five smoke requests at 19:40:08-19:40:36Z, then nothing.
 
 Methodology disclosure: `vercel metrics` queries return `payment_required` (Observability
@@ -1542,3 +1551,48 @@ unmeasurable without an upgrade.
   remains `dpl_A7TAM5bHTcxqe4ri1u86sX3KKrvQ` (section 61.6); the newer documentation
   deployment is confirmed by Vercel API listing only, and no HTTP request is sent to the
   application.
+
+### 61.12 Post-release header-evidence reconciliation (documentation-only)
+
+- Trigger: a self-review of section 61 against the actual response-header
+  captures (the archived Preview verification
+  `dpl_EGK7zzhrjczar2XNCrBM4EqEtuVG`, whose five bounded smoke rows are recorded in
+  section 61.7) plus the archived monitoring-gate run found
+  header and timing claims the evidence did not support. This subsection
+  records the corrections; the application was not changed.
+- Corrected: (1) sections 61.3, 61.4 and 61.7 stated `s-maxage=300` for
+  `/robots.txt`; the observed response is `Cache-Control: public, max-age=0, must-revalidate`
+  with `x-vercel-cache: PRERENDER` and, on the Preview only,
+  `X-Robots-Tag: noindex` (Vercel's automatic Preview noindex header), which
+  Production does not carry; (2) sections 61.3 and 61.4 described the
+  favorites 401 as `private, no-store`; the observed middleware 401 is
+  `Cache-Control: public, max-age=0, must-revalidate`
+  (`middleware.ts:35-38` returns it without a cache header; the
+  `private, no-store` stamp at `middleware.ts:43-44` applies only to
+  authenticated pass-through responses), while `/api/features` 200 does
+  carry `private, no-store`; (3) section 61.4's genres `Vercel-CDN-Cache-Control`
+  line is labelled source-level `lib/public-cache.ts` policy - the
+  directive is consumed by the platform and not echoed to the client; the
+  observed evidence is the MISS-to-HIT (`Age: 3` in the Preview, `Age: 5` in Production)
+  on `max-age=0`; (4) section 61.3's "exactly those 5 requests" in logs
+  -> the archived deployment-ID query returned 3 records (robots, genres
+  MISS, genres HIT), all level: info, with 0 secret-like and 0
+  error/retry-like strings; (5) section 61.8's re-query interval -> the
+  monitoring gate resumed at 20:04:17Z-20:04:52Z, so the no-request
+  interval from 19:40:37Z is ~24 minutes, not ~35.
+- Unchanged: every other figure in sections 61.1, 61.2, 61.6, 61.8 and
+  61.9 re-verified exactly against the archived gate run and the
+  firewall/deployment API (33 records in the burst window, 11 serverless,
+  0.037 req/s sustained, 0 quota-like strings, 0 Reflectionbot records,
+  6 `Redis connection error` lines in 4 records, 4 error-level records,
+  38 records total, 5 smoke records, peak 1-second bucket 19, Firewall
+  active version 6, `changes: []`, Reflectionbot deny active, project not
+  paused, Production READY/PROMOTED). The section 23 cache-policy table
+  remains source-level policy.
+- Release control: one documentation-only commit on a dedicated branch
+  from `origin/main`; report-content, structural, `git diff --check`, and
+  changed-file-inventory gates; no suite, coverage, build, audit, or
+  application request was run. Delivered under the same documentation-
+  only protocol and disclosure posture as section 61.11; the Preview
+  build-outcome poll was skipped under the documentation-only mandate
+  because no build input changed.
