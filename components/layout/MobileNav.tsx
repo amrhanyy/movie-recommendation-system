@@ -32,6 +32,14 @@ const items: MobileNavItem[] = [
   { href: '/ai-assistant', label: 'aiAssistant', icon: Film, feature: 'aiAssistant' },
 ]
 
+// Phase 25 (K): low-cardinality public destinations keep Next's default
+// prefetch. Everything else in this list is a per-user page (/watchlist,
+// /favorites) or a gated feature page (/ai-assistant), so it must never be
+// prefetched. The allowlist is explicit: a future entry is opted OUT by
+// default rather than silently prefetched.
+const PREFETCH_ALLOWED = new Set(['/', '/trending', '/top-rated', '/genres'])
+
+
 /**
  * Mobile navigation drawer (< 768px). Uses the Radix-backed Sheet for free
  * focus trapping, Escape-to-close, and screen-reader announcement. The trigger
@@ -41,7 +49,7 @@ export function MobileNav() {
   const [open, setOpen] = useState(false)
   const pathname = usePathname()
   const { data: session, status } = useSession()
-  const { isEnabled } = useFeatures()
+  const { isEnabled, loading: featuresLoading } = useFeatures()
   const { t } = useLanguage()
 
   const isAuthenticated = status !== 'loading' && !!session
@@ -83,8 +91,12 @@ export function MobileNav() {
 
         <nav aria-label="Mobile navigation" className="mt-6 flex flex-col gap-1">
           {items.map(({ href, label, icon: Icon, feature }) => {
-            // Respect feature flags (AI Assistant) and loading state.
-            if (feature && !isEnabled(feature)) return null
+            // Phase 25 (H): mirror FeatureNavItems exactly - core items render
+            // immediately, gated items wait for the shared feature state. The
+            // fail-closed default is `false`, so rendering a gated entry during
+            // the initial load would make it flash out again once the real value
+            // arrives; concealing it until then can only add a brief appear.
+            if (feature && (featuresLoading || !isEnabled(feature))) return null
             const isActive =
               pathname === href || (href !== '/' && pathname?.startsWith(href))
 
@@ -99,8 +111,7 @@ export function MobileNav() {
                     isActive
                       ? 'bg-white/10 text-white font-semibold'
                       : 'text-gray-300 hover:text-white hover:bg-white/5'
-                  )}
-                >
+                  )} prefetch={PREFETCH_ALLOWED.has(href) ? undefined : false}>
                   <Icon
                     className={cn('w-5 h-5', isActive ? 'text-cyan-400' : 'text-gray-400')}
                   />
@@ -119,8 +130,7 @@ export function MobileNav() {
                 <Link
                   href="/profile"
                   onClick={close}
-                  className="flex-1 flex items-center gap-2 px-4 py-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50 text-gray-200 hover:text-white border border-gray-700/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
-                >
+                  className="flex-1 flex items-center gap-2 px-4 py-3 rounded-lg bg-gray-800/50 hover:bg-gray-700/50 text-gray-200 hover:text-white border border-gray-700/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500" prefetch={false}>
                   <UserRound className="w-5 h-5 text-cyan-400" />
                   <span className="truncate">{session?.user?.name?.split(' ')[0] || 'Profile'}</span>
                 </Link>
@@ -142,8 +152,7 @@ export function MobileNav() {
               <Link
                 href="/auth/signin"
                 onClick={close}
-                className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-medium transition-colors hover:from-blue-500 hover:to-cyan-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
-              >
+                className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-medium transition-colors hover:from-blue-500 hover:to-cyan-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500" prefetch={false}>
                 {t('signIn')}
               </Link>
             </SheetClose>

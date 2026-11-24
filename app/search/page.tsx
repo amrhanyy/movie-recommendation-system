@@ -190,8 +190,7 @@ function SearchResults() {
                 aria-label={`View details for ${title}${
                   year ? `, ${year}` : ''
                 }${type === 'tv' ? ' (TV show)' : ' (movie)'}`}
-                className="group block focus:outline-none"
-              >
+                className="group block focus:outline-none" prefetch={false}>
                 <div className="relative aspect-[2/3] overflow-hidden rounded-xl border border-gray-700/50 bg-gray-800/40 shadow-md shadow-black/20 transition-all duration-300 group-hover:-translate-y-1 group-hover:border-gray-600/70 group-hover:shadow-cyan-900/20 focus-visible:ring-2 focus-visible:ring-cyan-500">
                   {posterSrc ? (
                     <Image

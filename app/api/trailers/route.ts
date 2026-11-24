@@ -3,6 +3,7 @@ import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
 import { redactSensitive } from '@/lib/ai-security'
 import { redisCache } from '@/lib/cache'
 import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace'
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
@@ -48,6 +49,9 @@ const getEndpoint = (filter: TrailerFilter) => {
       }
   }
 }
+
+// Phase 25 (N): approved public GET. Trailer lookups fan out to TMDB and are
+// identical for every visitor; cache them for 30 minutes at the CDN edge.
 
 export async function GET(request: NextRequest) {
   // Rate limit public TMDB proxy (M-03) — strict limit: this route fans out
@@ -157,7 +161,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: `No trailers found for ${filter}` }, { status: 404 })
     }
 
-    return NextResponse.json({ results: validMovies })
+    return NextResponse.json({ results: validMovies }, { headers: publicCacheHeaders('trailers') })
   } catch (error) {
     if (error instanceof Error && 'status' in error && typeof (error as { status?: unknown }).status === 'number') {
       const status = (error as { status: number }).status;

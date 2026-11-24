@@ -30,7 +30,7 @@ export function MovieCard({ movie, genres }: MovieCardProps) {
   const genreNames = getGenreNames(movie.genre_ids)
 
   return (
-    <Link href={`/movie/${movie.id}`}>
+    <Link href={`/movie/${movie.id}`} prefetch={false}>
       <div className="flex gap-4 p-4 hover:bg-gray-700/30 transition-colors rounded-xl cursor-pointer group">
         <div className="relative h-[180px] w-[120px] flex-shrink-0">
           {movie.poster_path ? (

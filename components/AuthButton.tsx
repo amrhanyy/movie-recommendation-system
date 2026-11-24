@@ -18,8 +18,7 @@ export function AuthButton() {
           className="flex items-center gap-2 bg-gray-800/50 hover:bg-gray-700/50 
                      px-3 py-2 rounded-lg text-gray-200 hover:text-white 
                      border border-gray-700/50 hover:border-gray-600/50 
-                     transition-all duration-300"
-        >
+                     transition-all duration-300" prefetch={false}>
           <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-600 to-cyan-500 flex items-center justify-center overflow-hidden">
             {session.user?.image ? (
               <img 

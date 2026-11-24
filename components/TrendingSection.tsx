@@ -201,8 +201,7 @@ export function TrendingSection({ initialMovies }: { initialMovies: MediaItem[] 
                     aria-label={`View details for ${item.title || item.name || 'title'}`}
                     onMouseEnter={() => setActiveItem(item)}
                     onMouseLeave={() => setActiveItem(null)}
-                    className="group block focus:outline-none"
-                  >
+                    className="group block focus:outline-none" prefetch={false}>
                     <div className="relative aspect-[2/3] rounded-xl overflow-hidden">
                       <Image
                         src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { redisCache } from '@/lib/cache';
 import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const CELEBRITIES_TTL = 300;
 
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
       return await response.json();
     }, CELEBRITIES_TTL);
 
-    return NextResponse.json(data);
+    return NextResponse.json(data, { headers: publicCacheHeaders('celebrities') });
   } catch {
     return NextResponse.json({ error: 'Failed to fetch celebrities' }, { status: 502 });
   }

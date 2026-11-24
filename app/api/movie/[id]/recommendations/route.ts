@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import redisCache from '../../../../../lib/cache';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { tmdbIdSchema } from '@/lib/security/schemas';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY
 const BASE_URL = 'https://api.themoviedb.org/3'
@@ -52,7 +53,7 @@ export async function GET(
       3600
     );
 
-    return NextResponse.json(data)
+    return NextResponse.json(data, { headers: publicCacheHeaders('similar') })
   } catch (error) {
     console.error('Error in recommendations route:', error)
     return NextResponse.json(

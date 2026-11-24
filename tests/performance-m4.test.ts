@@ -83,6 +83,19 @@ function geminiOkText(text: string) {
   };
 }
 
+// Phase 25 (G): the route now consults the shared server-only feature service
+// after auth. These suites exercise unrelated route behavior, so the gate is
+// pinned to the documented default (enabled) instead of touching Mongo.
+vi.mock('@/lib/features', () => ({
+  readFeatureState: vi.fn().mockResolvedValue({
+    ok: true,
+    source: 'database',
+    features: { aiAssistant: true },
+  }),
+  isAiAssistantEnabled: (state: { ok: boolean; features: { aiAssistant: boolean } }) =>
+    state.ok && state.features.aiAssistant === true,
+}));
+
 describe('M4 gemini timeouts', () => {
   beforeEach(async () => {
     vi.resetModules();

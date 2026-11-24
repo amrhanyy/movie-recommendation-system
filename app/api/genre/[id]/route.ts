@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
 import { tmdbIdSchema, mediaTypeStrictSchema } from '@/lib/security/schemas'
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3'
 const TMDB_API_KEY = process.env.TMDB_API_KEY
@@ -74,7 +75,7 @@ export async function GET(
       )
     }
 
-    return NextResponse.json(genre)
+    return NextResponse.json(genre, { headers: publicCacheHeaders('genres') })
   } catch (error) {
     console.error('Genre API error:', error)
     return NextResponse.json(

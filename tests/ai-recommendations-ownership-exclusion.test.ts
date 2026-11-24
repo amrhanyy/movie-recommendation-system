@@ -183,6 +183,19 @@ function cacheKeysSeen(): string[] {
   return mocks.redisGet.mock.calls.map((c: unknown[]) => c[0] as string);
 }
 
+// Phase 25 (G): the route now consults the shared server-only feature service
+// after auth. These suites exercise unrelated route behavior, so the gate is
+// pinned to the documented default (enabled) instead of touching Mongo.
+vi.mock('@/lib/features', () => ({
+  readFeatureState: vi.fn().mockResolvedValue({
+    ok: true,
+    source: 'database',
+    features: { aiAssistant: true },
+  }),
+  isAiAssistantEnabled: (state: { ok: boolean; features: { aiAssistant: boolean } }) =>
+    state.ok && state.features.aiAssistant === true,
+}));
+
 describe('REL-003 owned-item identifier exclusion (ai-recommendations)', () => {
   beforeEach(async () => {
     vi.resetModules();

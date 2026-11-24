@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit'
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 export async function GET(request: NextRequest) {
   // Rate limit public TMDB proxy (F-011/F-028)
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
 
     if (!response.ok) throw new Error('Failed to fetch trending movies')
     const data = await response.json()
-    return NextResponse.json(data)
+    return NextResponse.json(data, { headers: publicCacheHeaders('trending') })
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch trending movies' }, { status: 500 })
   }

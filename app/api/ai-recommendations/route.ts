@@ -17,6 +17,7 @@ import {
 } from '@/lib/ai-security';
 import { callGemini } from '@/lib/gemini-provider';
 import { buildRecommendationGeminiPayload } from '@/lib/gemini-payload';
+import { readFeatureState, isAiAssistantEnabled } from '@/lib/features';
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 
@@ -51,6 +52,18 @@ export async function GET(request: NextRequest) {
     );
     if (rateLimitResponse) {
       return rateLimitResponse;
+    }
+
+    // Phase 25 (G): the Node route handler owns the feature gate. Evaluated
+    // after authentication and rate limiting, and before any database query,
+    // quota consumption, cache write, TMDB call, or Gemini call. Fail closed:
+    // an unreachable or unreadable flag store answers 503, never "enabled".
+    const featureState = await readFeatureState();
+    if (!isAiAssistantEnabled(featureState)) {
+      return NextResponse.json(
+        { error: 'Feature unavailable' },
+        { status: 503, headers: { 'Cache-Control': 'private, no-store' } }
+      );
     }
 
     await connectToMongoDB();

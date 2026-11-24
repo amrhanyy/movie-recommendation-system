@@ -404,8 +404,17 @@ describe('R7 CI workflow contract', () => {
     expect(ci).not.toContain('REPLACE_WITH_32_PLUS_CHARACTERS');
   });
 
-  it('runs on pull_request and push to main', () => {
-    expect(ci).toContain('pull_request');
-    expect(ci).toContain('branches: [main]');
+  it('runs on pull_request and push to main, or documents why automatic triggers are disabled', () => {
+    // Commit 06ce23f made the workflow workflow_dispatch-only because account-level
+    // GitHub Actions execution was unavailable. Automatic triggers must either be
+    // present, or their absence must be explicitly documented in the workflow itself
+    // so the downgrade can never happen silently.
+    const automatic = ci.includes('pull_request') && ci.includes('branches: [main]');
+    const manualOnlyWithDisclosure =
+      ci.includes('workflow_dispatch') &&
+      ci.includes('Automatic GitHub Actions runs are temporarily disabled') &&
+      ci.includes('manually runnable');
+
+    expect(automatic || manualOnlyWithDisclosure).toBe(true);
   });
 });

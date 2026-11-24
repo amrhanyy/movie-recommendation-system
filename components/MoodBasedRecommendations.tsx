@@ -179,8 +179,7 @@ export function MoodBasedRecommendations() {
                   className="group relative bg-gradient-to-br from-gray-800/80 to-gray-900/90
                          rounded-xl overflow-hidden hover:shadow-2xl hover:shadow-cyan-500/10
                          transform hover:-translate-y-1 transition-all duration-300
-                         border border-gray-700/50 block focus:outline-none"
-                >
+                         border border-gray-700/50 block focus:outline-none" prefetch={false}>
                   <div className="relative aspect-[2/3] overflow-hidden">
                     <Image
                       src={`https://image.tmdb.org/t/p/w500${movie.poster_path}`}

@@ -32,8 +32,7 @@ export function AdminNavLink() {
   return (
     <Link
       href="/admin"
-      className="flex items-center gap-2 px-4 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-white/10 transition-all duration-300"
-    >
+      className="flex items-center gap-2 px-4 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-white/10 transition-all duration-300" prefetch={false}>
       <Shield className="w-4 h-4" />
       <span className="font-medium">Admin</span>
     </Link>

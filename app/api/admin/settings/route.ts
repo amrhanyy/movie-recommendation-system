@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, assertSameOriginOrReject } from "@/lib/security/auth";
 import { applyRateLimitUser, RATE_LIMITS } from "@/lib/security/rateLimit";
 import connectToMongoDB from "@/lib/mongodb";
-import mongoose from "mongoose";
+import { FeatureSettingsModel } from "@/lib/features-store";
 import { z } from "zod";
 
 interface FeatureSettings {
@@ -10,19 +10,6 @@ interface FeatureSettings {
     aiAssistant: boolean;
   };
 }
-
-const FeatureSettingsSchema = new mongoose.Schema(
-  {
-    features: {
-      aiAssistant: { type: Boolean, default: true },
-    },
-  },
-  { timestamps: true }
-);
-
-const FeatureSettingsModel =
-  mongoose.models.FeatureSettings ||
-  mongoose.model("FeatureSettings", FeatureSettingsSchema);
 
 const DEFAULT_CONFIG: FeatureSettings = {
   features: {

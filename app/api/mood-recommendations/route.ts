@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import redisCache from '@/lib/cache';
 import { buildCacheKey, CACHE_SCOPES } from '@/lib/cache-namespace';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 // Enhanced mood mapping with genres and keywords for better recommendations
 const moodToRecommendations = {
@@ -150,7 +151,7 @@ export async function GET(request: NextRequest) {
       MOOD_TTL
     );
 
-    return NextResponse.json(payload);
+    return NextResponse.json(payload, { headers: publicCacheHeaders('trending') });
   } catch (error) {
     console.error('Error fetching movies:', error);
     return NextResponse.json({ error: 'Failed to fetch movies' }, { status: 500 });

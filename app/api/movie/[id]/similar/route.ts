@@ -3,6 +3,7 @@ import { applyRateLimitPublic, RATE_LIMITS } from '@/lib/security/rateLimit';
 import { tmdbIdSchema } from '@/lib/security/schemas';
 import { redisCache } from '@/lib/cache';
 import { CACHE_SCOPES, buildCacheKey } from '@/lib/cache-namespace';
+import { publicCacheHeaders } from '@/lib/public-cache'
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const BASE_URL = 'https://api.themoviedb.org/3';
@@ -48,7 +49,7 @@ export async function GET(
       return await response.json();
     }, SIMILAR_TTL);
 
-    return NextResponse.json(data);
+    return NextResponse.json(data, { headers: publicCacheHeaders('similar') });
   } catch (error) {
     if (error instanceof Error && 'status' in error && typeof (error as { status?: unknown }).status === 'number') {
       // L-07: fixed error text, no upstream status/body passthrough

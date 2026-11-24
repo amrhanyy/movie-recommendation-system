@@ -83,7 +83,7 @@ export default function WatchHistory({ limit }: WatchHistoryProps) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-6 gap-4">
       {displayHistory.map((item) => (
-        <Link key={item._id} href={getItemLink(item)}>
+        <Link key={item._id} href={getItemLink(item)} prefetch={false}>
           <div className="flex items-center gap-4 bg-gray-800/50 rounded-xl p-4 hover:bg-gray-700/50 transition cursor-pointer">
             <div className="relative h-16 w-12 flex-shrink-0">
               {item.posterPath ? (

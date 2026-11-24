@@ -49,6 +49,17 @@ class RedisHealthMonitor {
     this._lastCheckTime = Date.now();
     const message = String(errorMessage || '');
 
+    // Phase 25 (O): provider request-quota exhaustion is not a transient
+    // connectivity problem. Retrying cannot succeed before the quota window
+    // resets, and every retry is another metered request against the very cap
+    // that just failed. Disable Redis at once so callers fall back to the
+    // in-process cache instead of burning quota in a retry loop.
+    if (/max requests limit exceeded|ERR max requests|usage limit|quota.*exceeded/i.test(message)) {
+      this._isDisabled = true;
+      this._isHealthy = false;
+      return true;
+    }
+
     // Connection/auth/timeout failures: unhealthy at once, no disable yet.
     if (
       /auth|WRONGPASS|NOAUTH|ECONNREFUSED|ETIMEDOUT|timeout|offline|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|connected.*closed|socket/i.test(

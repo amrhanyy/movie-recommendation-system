@@ -1,10 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { getToken } from 'next-auth/jwt'
-
-// Feature routes that need feature-flag checks
-const FEATURE_ROUTES = {
-  aiAssistant: ['/ai-assistant', '/api/ai-recommendations'],
-}
+import { isPublicApiPath } from '@/lib/public-api-paths'
 
 export async function middleware(request: NextRequest) {
   // Skip middleware for non-app paths
@@ -21,70 +17,32 @@ export async function middleware(request: NextRequest) {
   // Get auth token
   const token = await getToken({ req: request })
 
-  // Check if AI Assistant feature is enabled when accessing its routes
-  if (FEATURE_ROUTES.aiAssistant.some(route => request.nextUrl.pathname.startsWith(route))) {
-    try {
-      // Fetch feature configuration
-      const featureResponse = await fetch(`${request.nextUrl.origin}/api/features`)
-
-      if (!featureResponse.ok) {
-        throw new Error('Failed to fetch features')
-      }
-
-      const featureData = await featureResponse.json()
-
-      // If AI Assistant is disabled, redirect to homepage
-      if (!featureData.features?.aiAssistant) {
-        return NextResponse.redirect(new URL('/', request.url))
-      }
-    } catch {
-      // F-039 fix: fail closed (deny access) instead of fail open
-      // If we cannot verify the feature is enabled, deny access
-      if (request.nextUrl.pathname.startsWith('/api/')) {
-        return NextResponse.json(
-          { error: 'Feature unavailable' },
-          { status: 503 }
-        )
-      }
-      return NextResponse.redirect(new URL('/feature-unavailable', request.url))
-    }
-  }
-
   // Protect API routes (middleware is defense-in-depth only;
   // every API handler must also call requireSession/requireAdmin)
   if (request.nextUrl.pathname.startsWith('/api/')) {
-    // Sensitive nested leaf that lives under the public /api/movie/ prefix.
-    // CONFIG-001: /api/movie/[id]/ai-similar is a requireUser (Gemini) route,
-    // so it is excluded from the public /api/movie/ carve-out and protected.
-    // Exact shape match (no substring over-deny of other routes).
-    const isSensitiveMovieLeaf =
-      request.nextUrl.pathname.startsWith('/api/movie/') &&
-      request.nextUrl.pathname.endsWith('/ai-similar')
-    // Except for public APIs
-    if (
-      !request.nextUrl.pathname.startsWith('/api/auth') &&
-      !request.nextUrl.pathname.startsWith('/api/features') &&
-      !request.nextUrl.pathname.startsWith('/api/movies') &&
-      !request.nextUrl.pathname.startsWith('/api/trending') &&
-      !request.nextUrl.pathname.startsWith('/api/genres') &&
-      !request.nextUrl.pathname.startsWith('/api/genre/') &&
-      !(
-        request.nextUrl.pathname.startsWith('/api/movie/') &&
-        !isSensitiveMovieLeaf
-      ) &&
-      !request.nextUrl.pathname.startsWith('/api/tv/') &&
-      !request.nextUrl.pathname.startsWith('/api/actor/') &&
-      !request.nextUrl.pathname.startsWith('/api/celebrities') &&
-      !request.nextUrl.pathname.startsWith('/api/search') &&
-      !request.nextUrl.pathname.startsWith('/api/mood-recommendations') &&
-      !request.nextUrl.pathname.startsWith('/api/trailers')
-    ) {
+    // Phase 25 (G): the Edge runtime no longer evaluates feature flags. Doing so
+    // required an internal HTTP self-request to the feature endpoint on every
+    // gated request, which doubled the request count and involved the Edge
+    // isolate in a network round-trip it could not cache. Feature gating moved
+    // to the Node service (lib/features.ts) and runs inside the handlers, i.e.
+    // after authentication and before any provider/quota work.
+    //
+    // Public, anonymous API inventory lives in one Edge-safe module so it cannot
+    // drift. CONFIG-001: the sensitive /api/movie/[id]/ai-similar leaf is
+    // excluded there by exact shape match (no substring over-deny).
+    if (!isPublicApiPath(request.nextUrl.pathname)) {
       if (!token) {
         return NextResponse.json(
           { error: 'Authentication required' },
           { status: 401 }
         )
       }
+      // Phase 25 (N): an authenticated response is per-user data. A shared CDN
+      // must never store it; public cacheable routes opt in explicitly in their
+      // own handler instead.
+      const response = NextResponse.next()
+      response.headers.set('Cache-Control', 'private, no-store')
+      return response
     }
   }
 
